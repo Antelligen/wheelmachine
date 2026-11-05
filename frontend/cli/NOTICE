@@ -1,0 +1,8 @@
+Wheelmachine command line (wm) and MCP server (wm-mcp)
+Copyright 2026 Antelligen Private Limited
+
+Licensed under the Apache License, Version 2.0 (LICENSE).
+
+The wm and wm-mcp programs are built with Go and carry its standard library and
+runtime: Copyright 2009 The Go Authors, under the BSD-style licence that each
+release archive holds as LICENSE-go.
