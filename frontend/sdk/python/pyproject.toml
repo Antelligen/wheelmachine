@@ -1,0 +1,52 @@
+[build-system]
+# 1.27 or later: the licence as an SPDX expression, with its files, as metadata 2.4 has them
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wheelmachine"
+# kept in one place, src/wheelmachine/_version.py (tool.hatch.version below)
+dynamic = ["version"]
+description = "The official Python library for the Wheelmachine API: cloud machines for people and agents, paid by the second."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Antelligen Private Limited", email = "team@antelligen.com" }]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["wheelmachine", "cloud", "machines", "agents", "api", "sdk"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://wheelmachine.ai"
+Documentation = "https://docs.wheelmachine.ai/libraries"
+Source = "https://github.com/Antelligen/wheelmachine/tree/main/frontend/sdk/python"
+Issues = "https://github.com/Antelligen/wheelmachine/issues"
+Changelog = "https://github.com/Antelligen/wheelmachine/blob/main/frontend/sdk/python/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/wheelmachine/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wheelmachine"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/wheelmachine", "tests", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
