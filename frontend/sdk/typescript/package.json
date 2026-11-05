@@ -1,0 +1,57 @@
+{
+  "name": "wheelmachine",
+  "version": "0.1.2",
+  "description": "The official TypeScript library for the Wheelmachine API: cloud machines for people and agents, paid by the second.",
+  "keywords": [
+    "wheelmachine",
+    "cloud",
+    "machines",
+    "agents",
+    "api",
+    "sdk"
+  ],
+  "homepage": "https://docs.wheelmachine.ai/libraries",
+  "bugs": {
+    "url": "https://github.com/Antelligen/wheelmachine/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Antelligen/wheelmachine.git",
+    "directory": "frontend/sdk/typescript"
+  },
+  "license": "Apache-2.0",
+  "author": "Antelligen Private Limited <team@antelligen.com>",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node scripts/version.mjs && tsc",
+    "check": "tsc --noEmit",
+    "test": "tsc && node --test tests/*.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
