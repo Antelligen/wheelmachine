@@ -1,0 +1,334 @@
+name: release-clients
+
+# The client tools' releases, by tag, one tool a tag: wm-v<version> for wm and wm-mcp (frontend/cli), py-v<version> for
+# the Python library (frontend/sdk/python), ts-v<version> for the TypeScript library (frontend/sdk/typescript). The
+# version in the tag must be the one the tool keeps - Version in frontend/cli/api/client.go, __version__ in
+# frontend/sdk/python/src/wheelmachine/_version.py, version in frontend/sdk/typescript/package.json - and the tool's
+# CHANGELOG.md must have it.
+#
+# Off until the owner has set up what it publishes with: every job waits for the variable CLIENTS_RELEASE to be "true"
+# in the repository it runs in.
+#
+# This one file runs in two repositories. Here, in the private one, a tag hands the tool over: its folder exactly as
+# the tag has it - with the API's contract, the public repository's README and this file - is committed to the public
+# repository that CLIENTS_PUBLIC_REPO names, and tagged there the same, with the token CLIENTS_PUBLIC_TOKEN. There, the
+# same tag tests the tool, builds it, attests it and publishes it. It is built and published from the public
+# repository because each thing published says where it was built, and only there can anyone read the source it was
+# built from: npm makes provenance only for a public repository, and GitHub attests a private repository's builds only
+# on Enterprise Cloud.
+#
+# Every action is pinned to a full commit, its version beside it; every job is given only the permissions it uses.
+
+on:
+  push:
+    tags: ["wm-v*", "py-v*", "ts-v*"]
+
+permissions: {}
+
+jobs:
+  # ---- in the private repository ----
+
+  hand-over:
+    name: the tool, handed over to the public repository
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    concurrency:
+      group: clients-hand-over      # one at a time: each adds a commit to the public repository's main
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          fetch-depth: 0              # main's history: the tagged commit must be on it
+          persist-credentials: false
+      - name: the tag names a released version of a tool on main
+        id: tool
+        working-directory: source
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            wm-v*) dir=frontend/cli
+                   have=$(sed -n 's/^var Version = "\(.*\)"$/\1/p' frontend/cli/api/client.go) ;;
+            py-v*) dir=frontend/sdk/python
+                   have=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' frontend/sdk/python/src/wheelmachine/_version.py) ;;
+            ts-v*) dir=frontend/sdk/typescript
+                   have=$(python3 -c 'import json; print(json.load(open("frontend/sdk/typescript/package.json"))["version"])') ;;
+            *) echo "::error::$TAG is not a tag of a tool"; exit 1 ;;
+          esac
+          want=${TAG#*-v}
+          if [ -z "$have" ] || [ "$have" != "$want" ]; then
+            echo "::error::$TAG says $want, and $dir says ${have:-nothing}: tag the version the tool keeps"
+            exit 1
+          fi
+          if ! grep -qx "## $want" "$dir/CHANGELOG.md"; then
+            echo "::error::$dir/CHANGELOG.md has no '## $want'"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$TAG is on a commit that is not on main: a release is made from main"
+            exit 1
+          fi
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+      - name: what goes public holds interface only, says nothing of how the service is built, and no other tool's name
+        working-directory: source
+        run: |
+          python3 scripts/check-interface-only.py
+          python3 scripts/check-public-words.py
+          python3 scripts/check-names.py --files
+      # the tool's tests, here first: a version is handed over once, so a failing test stops it before it is public
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: startsWith(github.ref_name, 'wm-v')
+        with:
+          go-version: "1.27.3"
+          cache: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: startsWith(github.ref_name, 'py-v')
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: startsWith(github.ref_name, 'ts-v')
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: its tests pass
+        working-directory: source/${{ steps.tool.outputs.dir }}
+        run: |
+          case "$GITHUB_REF_NAME" in
+            wm-v*) go vet ./... && go test -count=1 ./... && python3 -B release.py --help >/dev/null ;;
+            py-v*) python3 -m pip install -q pytest==9.2.0 && python3 -m pytest -q -p no:cacheprovider ;;
+            ts-v*) npm ci --no-audit --no-fund && npm test ;;
+          esac
+      # the token is in the job from here on, and nothing of the repository's is run after it
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.CLIENTS_PUBLIC_REPO }}
+          token: ${{ secrets.CLIENTS_PUBLIC_TOKEN }}
+          path: public
+      - name: committed there as the tag has it, and tagged the same
+        env:
+          TAG: ${{ github.ref_name }}
+          DIR: ${{ steps.tool.outputs.dir }}
+          PUBLIC: ${{ vars.CLIENTS_PUBLIC_REPO }}
+        run: |
+          if [ -n "$(git -C public ls-remote --tags origin "refs/tags/$TAG")" ]; then
+            echo "::error::$PUBLIC has $TAG already: a version is released once (to publish it again, re-run its run there)"
+            exit 1
+          fi
+          # the folder as the tag has it - its tracked files, nothing left over from the version before - and beside it
+          # the contract, this file, and the public repository's front page and licence
+          rm -rf "public/$DIR"
+          git -C source archive --format=tar HEAD -- "$DIR" contracts/openapi.yaml .github/workflows/release-clients.yml |
+            tar -x -C public
+          cp source/frontend/public-repo/README.md public/README.md
+          cp source/frontend/cli/LICENSE public/LICENSE
+          git -C public add -A
+          git -C public -c user.name=Antelligen -c user.email=team@antelligen.com commit -q --allow-empty -m "$TAG"
+          git -C public tag "$TAG"
+          git -C public push --atomic origin "HEAD:refs/heads/$(git -C public symbolic-ref --short HEAD)" "refs/tags/$TAG"
+          echo "handed over: https://github.com/$PUBLIC/actions" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- in the public repository ----
+
+  wm:
+    name: wm and wm-mcp, tested and built
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'wm-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache: false                # standard library only: nothing to fetch, and nothing cached into a release
+      - name: vet and test, then every archive and SHA256SUMS (release.py, which stops on a version not the tag's)
+        working-directory: frontend/cli
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          python3 release.py "$RUNNER_TEMP/wm" --version "${GITHUB_REF_NAME#wm-v}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wm
+          path: ${{ runner.temp }}/wm/
+          if-no-files-found: error
+
+  wm-attest:
+    name: wm's archives, attested as built here
+    needs: wm
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'wm-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write                 # to sign as this workflow, at this commit
+      attestations: write             # to keep the attestations with the repository
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wm
+          path: wm
+      # a wrapper of actions/attest since its v4: build provenance for each archive SHA256SUMS lists
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: wm/SHA256SUMS
+
+  wm-release:
+    name: wm's release, with its archives
+    needs: wm-attest
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'wm-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write                 # to make the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wm
+          path: wm
+      - name: the release, its words from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          version=${GITHUB_REF_NAME#wm-v}
+          awk -v v="$version" '/^## / { p = ($2 == v); next } p' frontend/cli/CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          {
+            echo
+            echo "To check a download: \`sha256sum --check --ignore-missing SHA256SUMS\`, and that it was built here from"
+            echo "this tag: \`gh attestation verify wm_${version}_linux_amd64.tar.gz --repo $REPO\`."
+          } >> "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" wm/* --repo "$REPO" --verify-tag --title "wm $version" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  py:
+    name: the Python library, tested and built
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'py-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: test, then the source and the wheel, checked
+        working-directory: frontend/sdk/python
+        run: |
+          python3 -m pip install -q build==1.6.1 twine==7.0.0 pytest==9.2.0
+          python3 -m pytest -q -p no:cacheprovider
+          python3 -m build --outdir "$RUNNER_TEMP/dist"
+          python3 -m twine check --strict "$RUNNER_TEMP"/dist/*
+          v=${GITHUB_REF_NAME#py-v}
+          if [ ! -f "$RUNNER_TEMP/dist/wheelmachine-$v.tar.gz" ] || [ ! -f "$RUNNER_TEMP/dist/wheelmachine-$v-py3-none-any.whl" ]; then
+            ls "$RUNNER_TEMP/dist"
+            echo "::error::the build is not of $v: tag the version src/wheelmachine/_version.py keeps"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  py-publish:
+    name: the Python library, on PyPI
+    needs: py
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'py-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi                      # the environment PyPI's trusted publisher names
+      url: https://pypi.org/project/wheelmachine/
+    permissions:
+      id-token: write                 # PyPI's trusted publishing, and the attestations it signs: no token kept anywhere
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+
+  ts:
+    name: the TypeScript library, tested and built
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'ts-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: test, then the build, packed
+        working-directory: frontend/sdk/typescript
+        run: |
+          v=${GITHUB_REF_NAME#ts-v}
+          if [ "$(node -p 'require("./package.json").version')" != "$v" ]; then
+            echo "::error::package.json is not at $v: tag the version it keeps"
+            exit 1
+          fi
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+          git diff --exit-code -- src/version.ts
+          mkdir -p "$RUNNER_TEMP/npm"         # npm pack makes no folder of its own
+          npm pack --pack-destination "$RUNNER_TEMP/npm"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm
+          path: ${{ runner.temp }}/npm/
+          if-no-files-found: error
+
+  ts-publish:
+    name: the TypeScript library, on npm
+    needs: ts
+    if: vars.CLIENTS_RELEASE == 'true' && github.event.repository.visibility == 'public' && startsWith(github.ref_name, 'ts-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: npm                       # the environment npm's trusted publisher names
+      url: https://www.npmjs.com/package/wheelmachine
+    permissions:
+      id-token: write                 # npm's trusted publishing, and the provenance it signs
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: an npm that publishes by trusted publishing (11.5.1 or later)
+        run: npm install -g npm@11.21.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm
+          path: npm
+      - name: published, with provenance
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # NPM_TOKEN is for the first publish alone: npm takes a trusted publisher only for a package it already has.
+          # The file names the variable, never its value.
+          if [ -n "$NPM_TOKEN" ]; then
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$RUNNER_TEMP/.npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/.npmrc"
+          fi
+          npm publish ./npm/wheelmachine-*.tgz --provenance --access public   # ./: a bare npm/x.tgz is read as GitHub's npm/x
