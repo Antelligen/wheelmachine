@@ -195,6 +195,17 @@ def _opt_float(d: Mapping[str, Any], k: str) -> Optional[float]:
     return _num(d.get(k))
 
 
+def _amount(d: Mapping[str, Any], k: str) -> Optional[float]:
+    """An amount in the account's currency: ``k`` - or, said by an API from before accounts had currencies, which says
+    its amounts in dollars alone, ``k``_usd."""
+    return _num(d.get(k)) if k in d else _num(d.get(k + "_usd"))
+
+
+def _currency(d: Mapping[str, Any]) -> str:
+    """The currency an answer's amounts are in: ``USD``, ``GBP`` or ``EUR`` - US dollars for an answer that says none."""
+    return _opt_str(d, "currency") or "USD"
+
+
 def _int(d: Mapping[str, Any], k: str, default: int = 0) -> int:
     v = _num(d.get(k))
     return default if v is None else int(v)
@@ -316,13 +327,17 @@ class PersonLimits(APIObject):
     gpus: bool
     """Whether they may make GPU machines."""
     month_cap_usd: Optional[float]
-    """What their machines may come to in a month, in dollars."""
+    """Deprecated: ``month_cap`` in US dollars at Wheelmachine's rate."""
+    currency: str = "USD"
+    """The organisation's currency, which ``month_cap`` is in."""
+    month_cap: Optional[float] = None
+    """What their machines may come to in a month, in the organisation's currency."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "PersonLimits":
         return _stamp(
             cls(max_machines=_opt_int(d, "max_machines"), max_vcpus=_opt_int(d, "max_vcpus"), gpus=_bool(d, "gpus"),
-                month_cap_usd=_opt_float(d, "month_cap_usd")),
+                month_cap_usd=_opt_float(d, "month_cap_usd"), currency=_currency(d), month_cap=_amount(d, "month_cap")),
             d,
         )
 
@@ -333,17 +348,23 @@ class Standing(APIObject):
 
     can_spend: bool
     balance_usd: Optional[float]
-    """What is left to spend this month under the account's limit; None for an account with no monthly limit."""
+    """Deprecated: ``balance`` in US dollars at Wheelmachine's rate."""
     credit_usd: Optional[float]
-    """The account's credit left; None for an organisation's member, who does not read it."""
+    """Deprecated: ``credit`` in US dollars at Wheelmachine's rate."""
     reason: Optional[str]
     """Why it cannot spend, in words a person reads."""
+    currency: str = "USD"
+    """The account's currency, which ``balance`` and ``credit`` are in."""
+    balance: Optional[float] = None
+    """What is left to spend this month under the account's limit; None for an account with no monthly limit."""
+    credit: Optional[float] = None
+    """The account's credit left; None for an organisation's member, who does not read it."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Standing":
         return _stamp(
             cls(can_spend=_bool(d, "can_spend"), balance_usd=_opt_float(d, "balance_usd"), credit_usd=_opt_float(d, "credit_usd"),
-                reason=_opt_str(d, "reason")),
+                reason=_opt_str(d, "reason"), currency=_currency(d), balance=_amount(d, "balance"), credit=_amount(d, "credit")),
             d,
         )
 
@@ -583,7 +604,8 @@ class NetworkPolicy(APIObject):
     """What a machine may reach on the internet."""
 
     internet: str
-    """``"open"`` (the whole internet), ``"closed"`` (no outbound at all), or ``"allowed"`` (only ``allow``)."""
+    """``"open"`` (the whole internet), ``"closed"`` (no internet, though name lookups and some sites we host still
+    work), or ``"allowed"`` (only ``allow``)."""
     allow: List[str]
     """For ``"allowed"``: names (exact, or a leading ``*.``) for HTTP and HTTPS, IPv4/IPv6 ranges (CIDRs) for other ports."""
 
@@ -861,11 +883,11 @@ class TeamRules(APIObject):
     open_internet: bool
     """Whether its machines may have open internet; one open already stays open until changed."""
     month_budget_usd: Optional[float]
-    """What its machines may come to in a month, in dollars; None for no budget."""
+    """Deprecated: ``month_budget`` in US dollars at Wheelmachine's rate."""
     spent_usd: Optional[float]
-    """What its machines came to this month: shown to its managers, owners, admins and billing; None to its members."""
+    """Deprecated: ``spent`` in US dollars at Wheelmachine's rate."""
     open_machines: Optional[int]
-    """Its machines whose internet is open; None as ``spent_usd`` is."""
+    """Its machines whose internet is open; None as ``spent`` is."""
     models: str
     """``any``, until a team chooses its models."""
     set_by: Optional[PersonName]
@@ -878,6 +900,12 @@ class TeamRules(APIObject):
     public_ports: Literal["on", "links_only", "off"] = "on"
     """Whether its machines' ports may be opened to the whole internet (``on``), only shared by a five-minute link
     (``links_only``), or neither (``off``)."""
+    currency: str = "USD"
+    """The organisation's currency, which ``month_budget`` and ``spent`` are in."""
+    month_budget: Optional[float] = None
+    """What its machines may come to in a month, in the organisation's currency; None for no budget."""
+    spent: Optional[float] = None
+    """What its machines came to this month: shown to its managers, owners, admins and billing; None to its members."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "TeamRules":
@@ -897,6 +925,9 @@ class TeamRules(APIObject):
                 max_machine_vcpus=_opt_int(d, "max_machine_vcpus"),
                 idle_max_seconds=_opt_int(d, "idle_max_seconds"),
                 public_ports=_str(d, "public_ports", "on"),  # type: ignore[arg-type]
+                currency=_currency(d),
+                month_budget=_amount(d, "month_budget"),
+                spent=_amount(d, "spent"),
             ),
             d,
         )
@@ -1226,12 +1257,19 @@ class ModelList(APIObject):
     data: List[Model]
     suppliers: List[ModelSupplier]
     allowed: Optional[AllowedModels] = None
+    currency: str = "USD"
+    """The account's currency; with ``rate``, what a US dollar is in it at Wheelmachine's rate (1 in an account counted
+    in dollars), a provider's dollar price is shown beside it as a guide. The price itself is the provider's, in dollars."""
+    rate: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ModelList":
+        currency = _currency(d)
+        rate = _opt_float(d, "rate")
         return _stamp(
             cls(data=[Model.from_dict(m) for m in _list(d, "data")], suppliers=[ModelSupplier.from_dict(s) for s in _list(d, "suppliers")],
-                allowed=_opt(d, "allowed", AllowedModels.from_dict)),
+                allowed=_opt(d, "allowed", AllowedModels.from_dict), currency=currency,
+                rate=rate if rate is not None else (1.0 if currency == "USD" else None)),
             d,
         )
 
@@ -1615,6 +1653,11 @@ class GpuOffer(APIObject):
     ram_gb: Optional[float]
     disk_gb: Optional[float]
     location: Optional[Location]
+    currency: str = "USD"
+    """The account's currency, which ``price_per_hour`` is in."""
+    price_per_hour: float = 0.0
+    """What an hour of it comes to, in the account's currency (``price_per_hour_usd``: in US dollars, the price list's
+    own)."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "GpuOffer":
@@ -1631,6 +1674,8 @@ class GpuOffer(APIObject):
                 ram_gb=_opt_float(d, "ram_gb"),
                 disk_gb=_opt_float(d, "disk_gb"),
                 location=_opt(d, "location", Location.from_dict),
+                currency=_currency(d),
+                price_per_hour=_amount(d, "price_per_hour") or 0.0,
             ),
             d,
         )
@@ -1641,10 +1686,12 @@ class GpuList(APIObject):
     for_sale: bool
     """False while GPU machines are not yet open to every account; the list shows what is coming."""
     data: List[GpuOffer]
+    currency: str = "USD"
+    """The account's currency, which each offer's ``price_per_hour`` is in."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "GpuList":
-        return _stamp(cls(for_sale=_bool(d, "for_sale"), data=[GpuOffer.from_dict(o) for o in _list(d, "data")]), d)
+        return _stamp(cls(for_sale=_bool(d, "for_sale"), data=[GpuOffer.from_dict(o) for o in _list(d, "data")], currency=_currency(d)), d)
 
 
 @dataclass
@@ -1659,6 +1706,9 @@ class UsageLine(APIObject):
     """In an organisation, whose the machine is; None in a person's own account."""
     running_seconds: float
     usd: float
+    """What it came to in US dollars, as it is counted."""
+    amount: float = 0.0
+    """What it came to, in the account's currency."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "UsageLine":
@@ -1671,6 +1721,7 @@ class UsageLine(APIObject):
                 held_by=_opt(d, "held_by", HeldBy.from_dict),
                 running_seconds=_float(d, "running_seconds"),
                 usd=_float(d, "usd"),
+                amount=_num(d.get("amount")) if "amount" in d else _float(d, "usd"),
             ),
             d,
         )
@@ -1678,8 +1729,9 @@ class UsageLine(APIObject):
 
 @dataclass
 class AccountLimit(APIObject):
-    """The account's own limit for the month and Wheelmachine's under it: the lower holds (``in_force_usd``). Amounts
-    are None to those not shown them; ``limited`` says to anyone whether a limit holds the account."""
+    """The account's own limit for the month and Wheelmachine's under it: the lower holds (``in_force_amount``), in the
+    account's currency (``currency``). Amounts are None to those not shown them; ``limited`` says to anyone whether a
+    limit holds the account. Each ``*_usd`` amount is the same in US dollars at Wheelmachine's rate, deprecated."""
 
     name: str
     kind: str
@@ -1693,6 +1745,11 @@ class AccountLimit(APIObject):
     wheelmachine_month_cap_usd: Optional[float]
     changed_by: List[str]
     you_change: bool
+    currency: str = "USD"
+    month_cap: Optional[float] = None
+    in_force_amount: Optional[float] = None
+    spent: Optional[float] = None
+    wheelmachine_month_cap: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "AccountLimit":
@@ -1710,6 +1767,11 @@ class AccountLimit(APIObject):
                 wheelmachine_month_cap_usd=_opt_float(wm, "month_cap_usd"),
                 changed_by=_strs(d, "changed_by"),
                 you_change=_bool(d, "you_change"),
+                currency=_currency(d),
+                month_cap=_amount(d, "month_cap"),
+                in_force_amount=_num(d.get("in_force_amount")) if "in_force_amount" in d else _opt_float(d, "in_force_usd"),
+                spent=_amount(d, "spent"),
+                wheelmachine_month_cap=_amount(wm, "month_cap"),
             ),
             d,
         )
@@ -1726,6 +1788,8 @@ class TeamLimit(APIObject):
     percent: Optional[int]
     yours: bool
     you_change: bool
+    month_budget: Optional[float] = None
+    spent: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "TeamLimit":
@@ -1738,6 +1802,8 @@ class TeamLimit(APIObject):
                 percent=_opt_int(d, "percent"),
                 yours=_bool(d, "yours"),
                 you_change=_bool(d, "you_change"),
+                month_budget=_amount(d, "month_budget"),
+                spent=_amount(d, "spent"),
             ),
             d,
         )
@@ -1757,6 +1823,8 @@ class PersonLimit(APIObject):
     max_vcpus: Optional[int]
     gpus: bool
     you_change: bool
+    month_cap: Optional[float] = None
+    spent: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "PersonLimit":
@@ -1773,6 +1841,8 @@ class PersonLimit(APIObject):
                 max_vcpus=_opt_int(d, "max_vcpus"),
                 gpus=_bool(d, "gpus"),
                 you_change=_bool(d, "you_change"),
+                month_cap=_amount(d, "month_cap"),
+                spent=_amount(d, "spent"),
             ),
             d,
         )
@@ -1788,6 +1858,8 @@ class LimitNear(APIObject):
     spent_usd: Optional[float]
     percent: Optional[int]
     reached: bool
+    limit: Optional[float] = None
+    spent: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "LimitNear":
@@ -1799,6 +1871,8 @@ class LimitNear(APIObject):
                 spent_usd=_opt_float(d, "spent_usd"),
                 percent=_opt_int(d, "percent"),
                 reached=_bool(d, "reached"),
+                limit=_amount(d, "limit"),
+                spent=_amount(d, "spent"),
             ),
             d,
         )
@@ -1817,6 +1891,8 @@ class UsageLimits(APIObject):
     teams: List[TeamLimit]
     people: List[PersonLimit]
     yours: List[LimitNear]
+    currency: str = "USD"
+    """The account's currency: every amount is in it."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "UsageLimits":
@@ -1830,6 +1906,7 @@ class UsageLimits(APIObject):
                 teams=[TeamLimit.from_dict(t) for t in _list(d, "teams")],
                 people=[PersonLimit.from_dict(p) for p in _list(d, "people")],
                 yours=[LimitNear.from_dict(y) for y in _list(d, "yours")],
+                currency=_currency(d),
             ),
             d,
         )
@@ -1838,12 +1915,16 @@ class UsageLimits(APIObject):
 @dataclass
 class Usage(APIObject):
     """Each machine's running time and cost in a month - and what the account's folders came to, to those who watch its
-    money (``folders_usd``; None to anyone else)."""
+    money (``folders``; None to anyone else) - in the account's currency at Wheelmachine's rate now (``currency``), and
+    in US dollars as it is counted (``*_usd``)."""
 
     month: str
     total_usd: float
     machines: List[UsageLine]
     folders_usd: Optional[float] = None
+    currency: str = "USD"
+    total: float = 0.0
+    folders: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Usage":
@@ -1854,6 +1935,9 @@ class Usage(APIObject):
                 total_usd=_float(d, "total_usd"),
                 machines=[UsageLine.from_dict(m) for m in _list(d, "machines")],
                 folders_usd=float(folders) if isinstance(folders, (int, float)) and not isinstance(folders, bool) else None,
+                currency=_currency(d),
+                total=_amount(d, "total") or 0.0,
+                folders=_amount(d, "folders"),
             ),
             d,
         )
@@ -1864,11 +1948,12 @@ CreditEntryKind = Literal["welcome", "machine_time", "folders", "purchase", "ref
 
 @dataclass
 class CreditEntry(APIObject):
-    """Credit put in (``amount_usd`` above zero) or taken (below)."""
+    """Credit put in (``amount`` above zero) or taken (below), in the account's currency (``amount_usd``, deprecated: in
+    US dollars at Wheelmachine's rate)."""
 
     id: str
     kind: CreditEntryKind
-    """``welcome`` the $5 of free credit your own account gets; ``machine_time`` a machine's running time of a
+    """``welcome`` the free credit your own account gets - 5 of its currency; ``machine_time`` a machine's running time of a
     day (UTC); ``purchase`` credit bought, paid through Paddle (and a disputed payment that came back); ``refund``
     credit refunded through Paddle, or disputed with a bank; ``staff_credit`` and ``staff_debit`` credit
     Wheelmachine's staff put in or took back."""
@@ -1882,21 +1967,23 @@ class CreditEntry(APIObject):
     at: str
     updated_at: str
     """When it last changed: a day's running time grows until the day ends; no other entry changes."""
+    amount: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "CreditEntry":
         return _stamp(
             cls(id=_str(d, "id"), kind=_str(d, "kind"), amount_usd=_float(d, "amount_usd"),  # type: ignore[arg-type]
                 reason=_str(d, "reason"), machine=_opt_str(d, "machine"), machine_name=_opt_str(d, "machine_name"),
-                at=_str(d, "at"), updated_at=_str(d, "updated_at")),
+                at=_str(d, "at"), updated_at=_str(d, "updated_at"), amount=_amount(d, "amount") or 0.0),
             d,
         )
 
 
 @dataclass
 class CreditBalance(APIObject):
-    """The account's credit - prepaid usage credit in dollars, for Wheelmachine alone - and a page of its entries, the
-    newest first. Zero or below, the account cannot spend: its machines are paused, and none starts."""
+    """The account's credit - prepaid usage credit for Wheelmachine alone, counted in the account's currency
+    (``currency``) - and a page of its entries, the newest first. Zero or below, the account cannot spend: its machines
+    are paused, and none starts. Each ``*_usd`` amount is the same in US dollars at Wheelmachine's rate, deprecated."""
 
     account: str
     balance_usd: float
@@ -1915,13 +2002,28 @@ class CreditBalance(APIObject):
     ``charging_from`` (None until its notice has gone out); ``off`` not charged at all."""
     charging_from: Optional[str] = None
     free_credit_usd: Optional[float] = None
-    """The free credit your own account is still to get once you link a GitHub account on the dashboard's Code page;
-    None when there is none to get."""
+    """Deprecated: ``free_credit`` in US dollars at Wheelmachine's rate."""
+    currency: str = "USD"
+    """The currency it is counted in: ``USD``, ``GBP`` or ``EUR``."""
+    currency_fixed: bool = False
+    """Whether the currency is fixed, by the account's first purchase or by Wheelmachine's support; until then
+    ``client.credit.set_currency`` changes it."""
+    balance: float = 0.0
+    """The credit left, in the account's currency, to the millionth."""
+    low: float = 0.0
+    """Below this the credit is running low, and those who buy it are e-mailed once."""
+    buy_amounts: List[int] = field(default_factory=list)
+    """The amounts credit is bought in, in the account's currency, one at a time: 10, 25, 50 and 100; empty while it
+    cannot be."""
+    free_credit: Optional[float] = None
+    """The free credit your own account is still to get - 5 of its currency - once you link a GitHub account on the
+    dashboard's Code page; None when there is none to get."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "CreditBalance":
         buy = d.get("buy") if isinstance(d.get("buy"), Mapping) else {}
         amounts = buy.get("amounts_usd") if isinstance(buy.get("amounts_usd"), list) else []
+        local = buy.get("amounts") if isinstance(buy.get("amounts"), list) else amounts
         free = d.get("free_credit") if isinstance(d.get("free_credit"), Mapping) else None
         charging = d.get("charging") if isinstance(d.get("charging"), Mapping) else {}
         return _stamp(
@@ -1931,7 +2033,11 @@ class CreditBalance(APIObject):
                 entries=[CreditEntry.from_dict(e) for e in _list(d, "data")], next=_opt_str(d, "next"),
                 low_usd=_float(d, "low_usd") if "low_usd" in d else 0.0,
                 free_credit_usd=_float(free, "usd") if free is not None else None,
-                charging=_str(charging, "state") or "on", charging_from=_opt_str(charging, "from")),
+                charging=_str(charging, "state") or "on", charging_from=_opt_str(charging, "from"),
+                currency=_currency(d), currency_fixed=_bool(d, "currency_fixed"), balance=_amount(d, "balance") or 0.0,
+                low=_amount(d, "low") or 0.0,
+                buy_amounts=[int(a) for a in local if isinstance(a, (int, float)) and not isinstance(a, bool)],
+                free_credit=(_num(free.get("amount")) if "amount" in free else _float(free, "usd")) if free is not None else None),
             d,
         )
 
@@ -1952,13 +2058,15 @@ class CreditCheckout(APIObject):
     prices: List[Dict[str, Any]]
     custom_data: Dict[str, str]
     url: str
+    currency: str = "USD"
+    """The account's currency: each price is in it."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "CreditCheckout":
         return _stamp(
             cls(provider=_str(d, "provider"), environment=_str(d, "environment"), client_token=_str(d, "client_token"),
                 transaction_id=_opt_str(d, "transaction_id"), price_id=_str(d, "price_id"), prices=_list(d, "prices"),
-                custom_data=_labels(d, "custom_data"), url=_str(d, "url")),
+                custom_data=_labels(d, "custom_data"), url=_str(d, "url"), currency=_currency(d)),
             d,
         )
 
@@ -1966,20 +2074,23 @@ class CreditCheckout(APIObject):
 @dataclass
 class CreditPurchase(APIObject):
     """A checkout started to buy credit. Nothing is charged until it is paid in Paddle's checkout (``checkout.url``);
-    ``amount_usd`` of credit is there once Paddle says the payment is complete."""
+    ``amount`` of credit, in the account's currency, is there once Paddle says the payment is complete."""
 
     id: str
     account: str
     amount_usd: float
+    """Deprecated: ``amount`` in US dollars at Wheelmachine's rate."""
     checkout: CreditCheckout
     created_at: str
+    currency: str = "USD"
+    amount: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "CreditPurchase":
         co = d.get("checkout") if isinstance(d.get("checkout"), Mapping) else {}
         return _stamp(
             cls(id=_str(d, "id"), account=_str(d, "account"), amount_usd=_float(d, "amount_usd"), checkout=CreditCheckout.from_dict(co),
-                created_at=_str(d, "created_at")),
+                created_at=_str(d, "created_at"), currency=_currency(d), amount=_amount(d, "amount") or 0.0),
             d,
         )
 

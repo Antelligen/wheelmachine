@@ -207,10 +207,10 @@ class Wheelmachine:
         data, info = self._json("GET", "/v1/usage/limits")
         return _answered(UsageLimits.from_dict(data or {}), info)
 
-    def set_month_limit(self, usd: Optional[float]) -> UsageLimits:
-        """Set the account's own limit for the month, in dollars, or take it away with None: in your own account, with
-        a key that holds ``cloud:*``; in an organisation, an owner's."""
-        data, info = self._json("PUT", "/v1/usage/limits/account", payload={"month_cap_usd": usd})
+    def set_month_limit(self, amount: Optional[float]) -> UsageLimits:
+        """Set the account's own limit for the month, in the account's currency, or take it away with None: in your own
+        account, with a key that has ``cloud:*``; in an organisation, an owner's."""
+        data, info = self._json("PUT", "/v1/usage/limits/account", payload={"month_cap": amount})
         return _answered(UsageLimits.from_dict(data or {}), info)
 
     # --- team folders --------------------------------------------------------------------------------------------

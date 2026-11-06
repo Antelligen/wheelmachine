@@ -49,7 +49,7 @@ class TheCredit(APITest):
                          (25, "acct_test", "paddle", "sandbox"))
         self.assertEqual(purchase.checkout.url, "https://app.wheelmachine.ai/billing?purchase=" + purchase.id)
         sent = self.api.seen[-1]
-        self.assertEqual((sent.method, sent.path, sent.body), ("POST", "/v1/credit/purchases", b'{"amount_usd":25}'))
+        self.assertEqual((sent.method, sent.path, sent.body), ("POST", "/v1/credit/purchases", b'{"amount":25}'))
         self.assertTrue(sent.headers.get("idempotency-key"), "a purchase is a create: it carries an Idempotency-Key")
         with self.assertRaises(WheelmachineError) as wrong:
             self.client.credit.buy(30)
@@ -60,3 +60,34 @@ class TheCredit(APITest):
         credit = self.client.credit.get()
         self.assertTrue(credit.empty)
         self.assertEqual(credit.balance_usd, -0.04)
+
+    def test_an_account_counted_in_pounds_says_and_sets_its_amounts_in_pounds(self) -> None:
+        self.api.buy_open = True
+        credit = self.client.credit.get()
+        self.assertEqual((credit.currency, credit.currency_fixed, credit.balance, credit.buy_amounts), ("USD", False, 5.0, [10, 25, 50, 100]))
+        credit = self.client.credit.set_currency("GBP")
+        self.assertEqual((credit.currency, credit.balance, credit.balance_usd), ("GBP", 5.0, 6.25))
+        sent = self.api.seen[-1]
+        self.assertEqual((sent.method, sent.path, sent.json()), ("PUT", "/v1/credit/currency", {"currency": "GBP"}))
+        purchase = self.client.credit.buy(25)
+        self.assertEqual((purchase.currency, purchase.amount, purchase.amount_usd, purchase.checkout.currency), ("GBP", 25.0, 31.25, "GBP"))
+        self.assertEqual(self.api.seen[-1].json(), {"amount": 25})
+        limits = self.client.set_month_limit(160)
+        self.assertEqual((limits.currency, limits.account.month_cap, limits.account.month_cap_usd, limits.yours[0].limit), ("GBP", 160, 200.0, 160))
+        me = self.client.me()
+        self.assertEqual((me.standing.currency, me.standing.credit, me.standing.credit_usd), ("GBP", 5.0, 6.25))
+        gpus = self.client.gpus()
+        self.assertEqual((gpus.currency, gpus.data[0].price_per_hour, gpus.data[0].price_per_hour_usd), ("GBP", 2.024, 2.53))
+        usage = self.client.usage()
+        self.assertEqual(usage.currency, "GBP")
+        self.api.currency_fixed = True
+        with self.assertRaises(WheelmachineError) as caught:
+            self.client.credit.set_currency("EUR")
+        self.assertEqual((caught.exception.status, caught.exception.code), (409, "conflict"))
+
+    def test_an_answer_from_before_accounts_had_currencies_is_in_dollars(self) -> None:
+        old = CreditBalance.from_dict({"object": "credit", "account": "acct_test", "balance_usd": 4.25, "low_usd": 1, "empty": False,
+                                       "buy": {"open": True, "amounts_usd": [10, 25]}, "free_credit": {"usd": 5, "needs": "github"},
+                                       "data": [{"id": "ce_1", "kind": "welcome", "amount_usd": 5}]})
+        self.assertEqual((old.currency, old.balance, old.low, old.buy_amounts, old.free_credit, old.entries[0].amount),
+                         ("USD", 4.25, 1.0, [10, 25], 5.0, 5.0))

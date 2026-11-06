@@ -193,7 +193,12 @@ class FakeAPI:
         #: the credit as GET /v1/credit answers it: what is left, and its entries, the newest first; and whether credit
         #: can be bought (POST /v1/credit/purchases)
         self.buy_open = False
+        #: the credit's balance in the account's currency (``currency``; fixed once ``currency_fixed``), and each currency's
+        #: units to a dollar, as the API says its ``*_usd`` amounts by
         self.credit_usd = 5.0
+        self.currency = "USD"
+        self.currency_fixed = False
+        self.rates = {"USD": 1.0, "GBP": 0.8, "EUR": 0.9}
         self.credit_entries: List[Dict[str, Any]] = [
             {"id": "ce_" + "w" * 26, "object": "credit_entry", "kind": "welcome", "amount_usd": 5, "reason": "Free credit to start with",
              "machine": None, "machine_name": None, "at": "2026-10-23T12:00:00Z", "updated_at": "2026-10-23T12:00:00Z"}]
@@ -473,17 +478,35 @@ class FakeAPI:
 
     # --- the routes ---
 
+    def usd(self, v: Any) -> Any:
+        """An amount in the account's currency, in dollars at its rate: as the API says each ``*_usd`` amount."""
+        return None if v is None else round(v / self.rates[self.currency], 6)
+
     def limits_answer(self) -> Dict[str, Any]:
         """GET /v1/usage/limits as the API answers it, with the account's own limit as last set."""
         cap = self.own_limit
-        return {"object": "usage_limits", "month": "2026-10", "resets_at": "2026-11-01T00:00:00Z", "alert_percents": [50, 75, 90, 100],
-                "account": {"name": "Test", "kind": "person", "month_cap_usd": cap, "in_force_usd": cap, "in_force": "account" if cap is not None else "",
-                            "spent_usd": 12.5, "percent": None if not cap else int(12.5 / cap * 100), "limited": cap is not None,
-                            "set_by": None, "set_at": None, "wheelmachine": {"month_cap_usd": None, "max_machines": 100, "max_vcpus": None},
+        return {"object": "usage_limits", "month": "2026-10", "currency": self.currency, "resets_at": "2026-11-01T00:00:00Z",
+                "alert_percents": [50, 75, 90, 100],
+                "account": {"name": "Test", "kind": "person", "currency": self.currency, "month_cap": cap, "month_cap_usd": self.usd(cap),
+                            "in_force_amount": cap, "in_force_usd": self.usd(cap), "in_force": "account" if cap is not None else "",
+                            "spent": 12.5, "spent_usd": self.usd(12.5), "percent": None if not cap else int(12.5 / cap * 100), "limited": cap is not None,
+                            "set_by": None, "set_at": None,
+                            "wheelmachine": {"month_cap": None, "month_cap_usd": None, "max_machines": 100, "max_vcpus": None},
                             "changed_by": ["owner"], "you_change": True},
-                "teams": [], "people": [], "yours": [] if cap is None else [{"scope": "account", "name": "Test", "limit_usd": cap,
-                                                                           "spent_usd": 12.5, "percent": int(12.5 / cap * 100), "reached": False}],
+                "teams": [], "people": [], "yours": [] if cap is None else [{"scope": "account", "name": "Test", "limit": cap, "limit_usd": self.usd(cap),
+                                                                           "spent": 12.5, "spent_usd": self.usd(12.5),
+                                                                           "percent": int(12.5 / cap * 100), "reached": False}],
                 "passed": []}
+
+    def credit_answer(self, page: List[Dict[str, Any]], nxt: Any) -> Dict[str, Any]:
+        """GET /v1/credit as the API answers it: its amounts in the account's currency, and in dollars beside them."""
+        buy = ({"open": True, "amounts": [10, 25, 50, 100], "amounts_usd": [10, 25, 50, 100],
+                "paddle": {"environment": "sandbox", "client_token": "test_madeup0123"}}
+               if self.buy_open else {"open": False, "amounts": [], "amounts_usd": [], "paddle": None})
+        entries = [dict(e, amount=e.get("amount", e["amount_usd"]), amount_usd=self.usd(e.get("amount", e["amount_usd"]))) for e in page]
+        return {"object": "credit", "account": "acct_test", "currency": self.currency, "currency_fixed": self.currency_fixed,
+                "balance": self.credit_usd, "balance_usd": self.usd(self.credit_usd), "empty": self.credit_usd <= 0, "buy": buy,
+                "low": 1, "low_usd": self.usd(1), "data": entries, "next": nxt}
 
     def route(self, method: str, path: str, query: Dict[str, List[str]], headers: Dict[str, str], body: bytes,
               rid: str) -> Tuple[int, Any, Dict[str, str]]:
@@ -600,7 +623,8 @@ class FakeAPI:
             me = {"object": "me", "account": {"id": "acct_test", "kind": "person", "name": "Test Person"},
                   "person": {"id": "acct_test", "name": "Test Person", "email": None, "github_login": None}, "role": "owner",
                   "teams": None, "limits": None, "scopes": ["cloud:*"], "key": self.key_view(),
-                  "standing": {"can_spend": True, "balance_usd": 10.0, "credit_usd": self.credit_usd}, "levels": {}}
+                  "standing": {"can_spend": True, "currency": self.currency, "balance": 10.0, "balance_usd": self.usd(10.0),
+                               "credit": self.credit_usd, "credit_usd": self.usd(self.credit_usd)}, "levels": {}}
             if self.org:
                 me.update(account={"id": self.org["id"], "kind": "org", "name": self.org["name"]}, person=self.org["person"],
                           role=self.org["role"], teams=self.org["teams"], limits=self.org["limits"], levels=self.org.get("levels", {}))
@@ -615,29 +639,39 @@ class FakeAPI:
             return 200, {"object": "list", "data": [{"id": "mumbai", "city": "Mumbai", "country": "IN"},
                                                     {"id": "helsinki", "city": "Helsinki", "country": "FI"}]}, {}
         if (method, path) == ("GET", "/v1/gpus"):
-            return 200, {"object": "list", "for_sale": False, "data": [{
+            return 200, {"object": "list", "currency": self.currency, "for_sale": False, "data": [{
                 "id": "h100x1", "model": "H100 80GB", "count": 1, "memory_gb": 80, "cpus": 16, "ram_gb": 128.0,
-                "disk_gb": 500.0, "location": {"city": "Helsinki", "country": "FI"}, "price_per_hour_usd": 2.53,
+                "disk_gb": 500.0, "location": {"city": "Helsinki", "country": "FI"}, "currency": self.currency,
+                "price_per_hour": round(2.53 * self.rates[self.currency], 4), "price_per_hour_usd": 2.53,
                 "interruptible": False, "available": True}]}, {}
         if (method, path) == ("GET", "/v1/credit"):
             limit, after = self._page(q)
             start = int(after) if after else 0
             page = self.credit_entries[start:start + limit]
             nxt = str(start + limit) if start + limit < len(self.credit_entries) else None
-            buy = ({"open": True, "amounts_usd": [10, 25, 50, 100], "paddle": {"environment": "sandbox", "client_token": "test_madeup0123"}}
-                   if self.buy_open else {"open": False, "amounts_usd": [], "paddle": None})
-            return 200, {"object": "credit", "account": "acct_test", "balance_usd": self.credit_usd, "empty": self.credit_usd <= 0,
-                         "buy": buy, "data": page, "next": nxt}, {}
+            return 200, self.credit_answer(page, nxt), {}
+        if (method, path) == ("PUT", "/v1/credit/currency"):
+            b = _only(body, ("currency",))
+            if b.get("currency") not in ("USD", "GBP", "EUR"):
+                raise Problem(400, "invalid_request", "say currency: USD, GBP or EUR")
+            if self.currency_fixed:
+                raise Problem(409, "conflict", "this account's currency is fixed: Wheelmachine's support can change it if it was set wrongly")
+            self.currency = b["currency"]
+            return 200, self.credit_answer([], None), {}
         if (method, path) == ("POST", "/v1/credit/purchases"):
-            b = _only(body, ("amount_usd",))
+            b = _only(body, ("amount", "amount_usd"))
             if not self.buy_open:
                 raise Problem(501, "not_open", "buying credit is not open yet")
-            if b.get("amount_usd") not in (10, 25, 50, 100):
-                raise Problem(400, "invalid_request", "amount_usd is 10, 25, 50 or 100")
-            prices = [{"amount_usd": a, "price_id": "pri_" + str(a).rjust(26, "0")} for a in (10, 25, 50, 100)]
-            return 201, {"object": "credit_purchase", "id": "cp_" + "t" * 26, "account": "acct_test", "amount_usd": b["amount_usd"],
-                         "checkout": {"provider": "paddle", "environment": "sandbox", "client_token": "test_madeup0123",
-                                      "transaction_id": None, "price_id": "pri_" + str(b["amount_usd"]).rjust(26, "0"), "prices": prices,
+            if "amount" not in b and "amount_usd" in b and self.currency != "USD":
+                raise Problem(400, "invalid_request", "this account is counted in another currency: send amount")
+            amount = b.get("amount", b.get("amount_usd"))
+            if amount not in (10, 25, 50, 100):
+                raise Problem(400, "invalid_request", "amount is 10, 25, 50 or 100")
+            prices = [{"amount": a, "amount_usd": a, "price_id": "pri_" + str(a).rjust(26, "0")} for a in (10, 25, 50, 100)]
+            return 201, {"object": "credit_purchase", "id": "cp_" + "t" * 26, "account": "acct_test", "currency": self.currency,
+                         "amount": amount, "amount_usd": self.usd(amount),
+                         "checkout": {"provider": "paddle", "environment": "sandbox", "client_token": "test_madeup0123", "currency": self.currency,
+                                      "transaction_id": None, "price_id": "pri_" + str(amount).rjust(26, "0"), "prices": prices,
                                       "custom_data": {"wheelmachine_account": "acct_test", "wheelmachine_purchase": "cp_" + "t" * 26},
                                       "url": "https://app.wheelmachine.ai/billing?purchase=cp_" + "t" * 26},
                          "created_at": "2026-11-02T09:30:00Z"}, {}
@@ -684,16 +718,20 @@ class FakeAPI:
         if (method, path) == ("GET", "/v1/usage/limits"):
             return 200, self.limits_answer(), {}
         if (method, path) == ("PUT", "/v1/usage/limits/account"):
-            usd = (body or {}).get("month_cap_usd")
-            self.own_limit = usd
+            b = _only(body, ("month_cap", "month_cap_usd"))
+            if "month_cap" not in b and "month_cap_usd" in b and self.currency != "USD":
+                raise Problem(400, "invalid_request", "this account is counted in another currency: set month_cap")
+            self.own_limit = b.get("month_cap", b.get("month_cap_usd"))
             return 200, self.limits_answer(), {}
         if (method, path) == ("GET", "/v1/usage"):
             month = one("month") or "2026-10"
+            rate = self.rates[self.currency]
             lines = [{"machine": mid, "name": m["name"], "project": m["project"], "made_by": m.get("made_by"),
-                      "held_by": m.get("held_by"), "running_seconds": 60.0, "usd": 0.01}
+                      "held_by": m.get("held_by"), "running_seconds": 60.0, "amount": round(0.01 * rate, 4), "usd": 0.01}
                      for mid, m in self.machines.items() if one("project") in (None, m["project"])]
-            return 200, {"object": "usage", "month": month, "machines": lines,
-                         "total_usd": round(sum(x["usd"] for x in lines), 4)}, {}
+            total = round(sum(x["usd"] for x in lines), 4)
+            return 200, {"object": "usage", "month": month, "currency": self.currency, "machines": lines, "total": round(total * rate, 4),
+                         "total_usd": total}, {}
 
         # projects
         if (method, path) == ("GET", "/v1/projects"):

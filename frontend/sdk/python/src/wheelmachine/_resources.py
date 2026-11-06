@@ -918,7 +918,8 @@ class Keys(_Resource):
     ) -> KeyCreated:
         """Makes a key. Its ``secret`` is in this answer only: keep it somewhere safe at once.
 
-        A key with full access (``cloud:*``) needs the code we e-mail the key's person: refused without it
+        A key with full access (``cloud:*``), or that makes keys or gives secrets (``cloud:keys:write``,
+        ``cloud:secrets:write``), needs the code we e-mail the key's person: refused without it
         (PermissionDeniedError, ``code`` ``confirm_required``, its ``confirm`` saying what for), it is sent with
         ``client.confirm_codes.send(**error.confirm)`` and given here as ``confirm_code``."""
         payload = _given(
@@ -1283,12 +1284,13 @@ def _audit_query(
 
 
 class Credit(_Resource):
-    """``client.credit``: the account's credit - prepaid usage credit in dollars, for Wheelmachine alone. Your own
-    account gets $5 of free credit once, and a new organisation none; machines' running time is taken from it
-    once a minute, one entry a machine a day; at zero or below the account cannot spend, and its machines are paused
-    until the balance is above $0 (``buy``). In an organisation the credit is the organisation's, read by its owners,
-    admins and billing and bought by its owners and billing (PermissionDeniedError for anyone else, and for a key limited to
-    some projects)."""
+    """``client.credit``: the account's credit - prepaid usage credit for Wheelmachine alone, counted in the account's
+    currency (``currency``: US dollars, pounds sterling or euros). Your own account gets 5 of its currency in free credit
+    once, and a new organisation none; machines' running time is taken from it once a minute, one entry a machine
+    a day; at zero or below the account cannot spend, and its machines are paused until the balance is above zero
+    (``buy``). The currency can be changed until your first purchase, or until we change it for you (``set_currency``). In an organisation
+    the credit is the organisation's, read by its owners, admins and billing and bought by its owners and billing
+    (PermissionDeniedError for anyone else, and for a key limited to some projects)."""
 
     def get(self, *, limit: Optional[int] = None) -> CreditBalance:
         """The credit: what is left, whether it has run out, whether credit can be bought here yet, and its latest
@@ -1309,14 +1311,22 @@ class Credit(_Resource):
 
         return PageIterator(page)
 
-    def buy(self, amount_usd: int, *, idempotency_key: Optional[str] = None) -> CreditPurchase:
-        """A checkout for ``amount_usd`` dollars of credit - 10, 25, 50 or 100 - started. Nothing is charged until it
-        is paid in Paddle's checkout: open ``checkout.url`` in a browser signed in to the dashboard, in the same
-        account. Paddle adds any sales tax or VAT and e-mails the receipt and tax invoice; the credit is there once
-        Paddle says the payment is complete. Where buying credit is not set up, the error's ``code`` is
+    def buy(self, amount: int, *, idempotency_key: Optional[str] = None) -> CreditPurchase:
+        """A checkout for ``amount`` of the account's currency in credit - 10, 25, 50 or 100 - started. Nothing is
+        charged until it is paid in Paddle's checkout: open ``checkout.url`` in a browser signed in to the dashboard, in
+        the same account. Paddle adds any sales tax or VAT and e-mails the receipt and tax invoice; the credit is there
+        once Paddle says the payment is complete. Where buying credit is not set up, the error's ``code`` is
         ``not_open``."""
         data, info = self._client._json(
-            "POST", "/v1/credit/purchases", payload={"amount_usd": amount_usd}, idempotency_key=_key(idempotency_key)
+            "POST", "/v1/credit/purchases", payload={"amount": amount}, idempotency_key=_key(idempotency_key)
         )
         return _answered(CreditPurchase.from_dict(data or {}), info)
+
+    def set_currency(self, currency: str) -> CreditBalance:
+        """The currency the credit is counted in, changed - ``"USD"``, ``"GBP"`` or ``"EUR"`` - until your first purchase, or until we change it for you
+        (ConflictError then). The credit keeps its value at Wheelmachine's rates but the
+        free credit, which becomes 5 of the new currency; limits, budgets and the spend alert are turned too. In your
+        own account, you change it; in an organisation, its owners and billing. The credit, as it is then."""
+        data, info = self._client._json("PUT", "/v1/credit/currency", payload={"currency": currency})
+        return _answered(CreditBalance.from_dict(data or {}), info)
 

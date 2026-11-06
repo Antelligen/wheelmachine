@@ -405,11 +405,11 @@ class AccountAndCatalogue(APITest):
         limits = self.client.limits()
         self.assertEqual((limits.account.limited, limits.account.month_cap_usd, limits.alert_percents), (False, None, [50, 75, 90, 100]))
         limits = self.client.set_month_limit(50)
-        self.assertEqual(self.api.seen[-1].json(), {"month_cap_usd": 50})
+        self.assertEqual(self.api.seen[-1].json(), {"month_cap": 50})
         self.assertEqual((limits.account.month_cap_usd, limits.account.in_force, limits.account.percent), (50, "account", 25))
         self.assertEqual((limits.yours[0].scope, limits.yours[0].limit_usd), ("account", 50))
         self.client.set_month_limit(None)
-        self.assertEqual(self.api.seen[-1].json(), {"month_cap_usd": None})
+        self.assertEqual(self.api.seen[-1].json(), {"month_cap": None})
 
     def test_projects(self) -> None:
         p = self.client.projects.create("research")
