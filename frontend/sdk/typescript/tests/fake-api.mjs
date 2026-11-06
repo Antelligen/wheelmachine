@@ -121,7 +121,12 @@ export class FakeAPI {
     /** the credit as GET /v1/credit answers it: what is left, and its entries, the newest first; and whether credit can
      * be bought (POST /v1/credit/purchases) */
     this.buyOpen = false;
+    /** the credit's balance, in the account's currency (`currency`; fixed once `currencyFixed`), and each currency's
+     * units to a dollar, as the API says its `*_usd` amounts by */
     this.creditUSD = 5;
+    this.currency = "USD";
+    this.currencyFixed = false;
+    this.rates = { USD: 1, GBP: 0.8, EUR: 0.9 };
     this.creditEntries = [{ id: "ce_" + "w".repeat(26), object: "credit_entry", kind: "welcome", amount_usd: 5,
       reason: "Free credit to start with", machine: null, machine_name: null, at: "2026-10-23T12:00:00Z", updated_at: "2026-10-23T12:00:00Z" }];
     this.projects = new Map();
@@ -396,18 +401,34 @@ export class FakeAPI {
     return [status, payload, extra];
   }
 
+  // an amount in the account's currency, in dollars at its rate - as the API says each `*_usd` amount
+  usd(v) {
+    return v === null || v === undefined ? v : Math.round((v / this.rates[this.currency]) * 1e6) / 1e6;
+  }
+
   // GET /v1/usage/limits as the API answers it, with the account's own limit as last set
   limitsAnswer() {
     const cap = this.ownLimit ?? null;
     const percent = cap ? Math.floor((12.5 / cap) * 100) : null;
     return {
-      object: "usage_limits", month: "2026-10", resets_at: "2026-11-01T00:00:00Z", alert_percents: [50, 75, 90, 100],
-      account: { name: "Test", kind: "person", month_cap_usd: cap, in_force_usd: cap, in_force: cap === null ? "" : "account", spent_usd: 12.5, percent,
-        limited: cap !== null, set_by: null, set_at: null, wheelmachine: { month_cap_usd: null, max_machines: 100, max_vcpus: null },
+      object: "usage_limits", month: "2026-10", currency: this.currency, resets_at: "2026-11-01T00:00:00Z", alert_percents: [50, 75, 90, 100],
+      account: { name: "Test", kind: "person", currency: this.currency, month_cap: cap, month_cap_usd: this.usd(cap), in_force_amount: cap,
+        in_force_usd: this.usd(cap), in_force: cap === null ? "" : "account", spent: 12.5, spent_usd: this.usd(12.5), percent,
+        limited: cap !== null, set_by: null, set_at: null, wheelmachine: { month_cap: null, month_cap_usd: null, max_machines: 100, max_vcpus: null },
         changed_by: ["owner"], you_change: true },
-      teams: [], people: [], yours: cap === null ? [] : [{ scope: "account", name: "Test", limit_usd: cap, spent_usd: 12.5, percent, reached: false }],
+      teams: [], people: [], yours: cap === null ? [] : [{ scope: "account", name: "Test", limit: cap, limit_usd: this.usd(cap), spent: 12.5,
+        spent_usd: this.usd(12.5), percent, reached: false }],
       passed: [],
     };
+  }
+
+  // GET /v1/credit as the API answers it: its amounts in the account's currency, and in dollars beside them
+  creditAnswer(data, next) {
+    const buy = this.buyOpen ? { open: true, amounts: [10, 25, 50, 100], amounts_usd: [10, 25, 50, 100], paddle: { environment: "sandbox", client_token: "test_madeup0123" } }
+      : { open: false, amounts: [], amounts_usd: [], paddle: null };
+    const entries = data.map((e) => ({ ...e, amount: e.amount ?? e.amount_usd, amount_usd: this.usd(e.amount ?? e.amount_usd) }));
+    return { object: "credit", account: "acct_test", currency: this.currency, currency_fixed: this.currencyFixed, balance: this.creditUSD,
+      balance_usd: this.usd(this.creditUSD), empty: this.creditUSD <= 0, buy, low: 1, low_usd: this.usd(1), data: entries, next };
   }
 
   route(method, path, query, headers, raw, rid) {
@@ -873,7 +894,8 @@ export class FakeAPI {
     if (route === "GET /v1/me") {
       const me = { object: "me", account: { id: "acct_test", kind: "person", name: "Test Person" },
         person: { id: "acct_test", name: "Test Person", email: null, github_login: null }, role: "owner", teams: null, limits: null,
-        scopes: ["cloud:*"], key: this.keyView(), standing: { can_spend: true, balance_usd: 10, credit_usd: this.creditUSD }, levels: {} };
+        scopes: ["cloud:*"], key: this.keyView(), standing: { can_spend: true, currency: this.currency, balance: 10, balance_usd: this.usd(10),
+          credit: this.creditUSD, credit_usd: this.usd(this.creditUSD) }, levels: {} };
       if (this.org) {
         Object.assign(me, { account: { id: this.org.id, kind: "org", name: this.org.name }, person: this.org.person, role: this.org.role,
           teams: this.org.teams, limits: this.org.limits, levels: this.org.levels ?? {} });
@@ -889,26 +911,37 @@ export class FakeAPI {
       return [200, { object: "list", data: [{ id: "mumbai", city: "Mumbai", country: "IN" }, { id: "helsinki", city: "Helsinki", country: "FI" }] }, {}];
     }
     if (route === "GET /v1/gpus") {
-      const offer = { id: "h100x1", model: "H100 80GB", count: 1, memory_gb: 80, cpus: 16, ram_gb: 128, disk_gb: 500, location: { city: "Helsinki", country: "FI" }, price_per_hour_usd: 2.53, interruptible: false, available: true };
-      return [200, { object: "list", for_sale: false, data: [offer] }, {}];
+      const offer = { id: "h100x1", model: "H100 80GB", count: 1, memory_gb: 80, cpus: 16, ram_gb: 128, disk_gb: 500, location: { city: "Helsinki", country: "FI" },
+        currency: this.currency, price_per_hour: Math.round(2.53 * this.rates[this.currency] * 1e4) / 1e4, price_per_hour_usd: 2.53, interruptible: false, available: true };
+      return [200, { object: "list", currency: this.currency, for_sale: false, data: [offer] }, {}];
     }
     if (route === "GET /v1/credit") {
       const [limit, after] = this.page(query);
       const start = after === null ? 0 : Number(after);
       const data = this.creditEntries.slice(start, start + limit);
       const next = start + limit < this.creditEntries.length ? String(start + limit) : null;
-      const buy = this.buyOpen ? { open: true, amounts_usd: [10, 25, 50, 100], paddle: { environment: "sandbox", client_token: "test_madeup0123" } }
-        : { open: false, amounts_usd: [], paddle: null };
-      return [200, { object: "credit", account: "acct_test", balance_usd: this.creditUSD, empty: this.creditUSD <= 0, buy, data, next }, {}];
+      return [200, this.creditAnswer(data, next), {}];
+    }
+    if (route === "PUT /v1/credit/currency") {
+      const b = only(body, ["currency"]);
+      if (!["USD", "GBP", "EUR"].includes(b.currency)) throw new Problem(400, "invalid_request", "say currency: USD, GBP or EUR");
+      if (this.currencyFixed) throw new Problem(409, "conflict", "this account's currency is fixed: Wheelmachine's support can change it if it was set wrongly");
+      this.currency = b.currency;
+      return [200, this.creditAnswer([], null), {}];
     }
     if (route === "POST /v1/credit/purchases") {
-      const b = only(body, ["amount_usd"]);
+      const b = only(body, ["amount", "amount_usd"]);
       if (!this.buyOpen) throw new Problem(501, "not_open", "buying credit is not open yet");
-      if (![10, 25, 50, 100].includes(b.amount_usd)) throw new Problem(400, "invalid_request", "amount_usd is 10, 25, 50 or 100");
-      const prices = [10, 25, 50, 100].map((a) => ({ amount_usd: a, price_id: "pri_" + String(a).padStart(26, "0") }));
-      return [201, { object: "credit_purchase", id: "cp_" + "t".repeat(26), account: "acct_test", amount_usd: b.amount_usd,
-        checkout: { provider: "paddle", environment: "sandbox", client_token: "test_madeup0123", transaction_id: null,
-          price_id: "pri_" + String(b.amount_usd).padStart(26, "0"), prices,
+      if (b.amount === undefined && b.amount_usd !== undefined && this.currency !== "USD") {
+        throw new Problem(400, "invalid_request", "this account is counted in another currency: send amount");
+      }
+      const amount = b.amount ?? b.amount_usd;
+      if (![10, 25, 50, 100].includes(amount)) throw new Problem(400, "invalid_request", "amount is 10, 25, 50 or 100");
+      const prices = [10, 25, 50, 100].map((a) => ({ amount: a, amount_usd: a, price_id: "pri_" + String(a).padStart(26, "0") }));
+      return [201, { object: "credit_purchase", id: "cp_" + "t".repeat(26), account: "acct_test", currency: this.currency, amount,
+        amount_usd: this.usd(amount),
+        checkout: { provider: "paddle", environment: "sandbox", client_token: "test_madeup0123", currency: this.currency, transaction_id: null,
+          price_id: "pri_" + String(amount).padStart(26, "0"), prices,
           custom_data: { wheelmachine_account: "acct_test", wheelmachine_purchase: "cp_" + "t".repeat(26) },
           url: "https://app.wheelmachine.ai/billing?purchase=cp_" + "t".repeat(26) }, created_at: "2026-11-02T09:30:00Z" }, {}];
     }
@@ -955,15 +988,22 @@ export class FakeAPI {
     }
     if (route === "GET /v1/usage/limits") return [200, this.limitsAnswer(), {}];
     if (route === "PUT /v1/usage/limits/account") {
-      this.ownLimit = body?.month_cap_usd ?? null;
+      const b = only(body, ["month_cap", "month_cap_usd"]);
+      if (!("month_cap" in b) && "month_cap_usd" in b && this.currency !== "USD") {
+        throw new Problem(400, "invalid_request", "this account is counted in another currency: set month_cap");
+      }
+      this.ownLimit = ("month_cap" in b ? b.month_cap : b.month_cap_usd) ?? null;
       return [200, this.limitsAnswer(), {}];
     }
     if (route === "GET /v1/usage") {
       const project = query.get("project");
       const lines = [...this.machines.values()]
         .filter((m) => project === null || m.project === project)
-        .map((m) => ({ machine: m.id, name: m.name, project: m.project, made_by: m.made_by, held_by: m.held_by, running_seconds: 60, usd: 0.01 }));
-      return [200, { object: "usage", month: query.get("month") ?? "2026-10", machines: lines, total_usd: Math.round(lines.length * 100) / 10000 }, {}];
+        .map((m) => ({ machine: m.id, name: m.name, project: m.project, made_by: m.made_by, held_by: m.held_by, running_seconds: 60,
+          amount: Math.round(0.01 * this.rates[this.currency] * 1e4) / 1e4, usd: 0.01 }));
+      const total = Math.round(lines.length * 100) / 10000;
+      return [200, { object: "usage", month: query.get("month") ?? "2026-10", currency: this.currency, machines: lines,
+        total: Math.round(total * this.rates[this.currency] * 1e4) / 1e4, total_usd: total }, {}];
     }
 
     if (route === "GET /v1/projects") {

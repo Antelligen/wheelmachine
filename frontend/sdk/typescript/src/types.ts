@@ -94,12 +94,23 @@ export interface Problem {
  */
 export interface LimitHit {
   scope: "wheelmachine" | "account" | "team" | "person";
-  measure: "month_usd" | "machines" | "vcpus" | "gpus" | "folders_bytes" | "file_bytes" | "folder_entries";
+  /** What was spent this month - `month_usd` in an account counted in dollars, `month` in one counted in pounds or euros. */
+  measure: "month_usd" | "month" | "machines" | "vcpus" | "gpus" | "folders_bytes" | "file_bytes" | "folder_entries";
+  /** The currency of a limit for the month's amounts: the account's. */
+  currency?: Currency;
   limit: number | null;
   used: number | null;
   resets_at: string | null;
   raised_by: string[];
 }
+
+/**
+ * The currency an account is counted in: its credit, its history, its limits and every price it is shown. Pounds
+ * sterling for an account made in the United Kingdom, euros for one made in the euro area, US dollars for every other.
+ * Every amount is said in it; each `*_usd` field beside one is the same amount in US dollars at Wheelmachine's rate,
+ * kept for clients from before and deprecated.
+ */
+export type Currency = "USD" | "GBP" | "EUR";
 
 /** Why a machine is paused, while a limit holds it so. */
 export interface PauseReason {
@@ -155,16 +166,26 @@ export interface PersonLimits {
   max_vcpus: number | null;
   /** Whether they may make GPU machines. */
   gpus: boolean;
-  /** What their machines may come to in a month, in dollars. */
+  /** The organisation's currency, which `month_cap` is in. */
+  currency: Currency;
+  /** What their machines may come to in a month, in the organisation's currency. */
+  month_cap: number | null;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `month_cap`. */
   month_cap_usd: number | null;
 }
 
 export interface Standing {
   /** False when the credit has run out, the month's limit is reached, or the account is on hold. */
   can_spend: boolean;
+  /** The account's currency, which `balance` and `credit` are in. */
+  currency: Currency;
   /** What is left to spend this month under the account's limit; null for an account with no monthly limit. */
-  balance_usd?: number | null;
+  balance?: number | null;
   /** The account's credit left; null for an organisation's member, who does not read it. */
+  credit?: number | null;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `balance`. */
+  balance_usd?: number | null;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `credit`. */
   credit_usd?: number | null;
   /** Why it cannot spend, in words a person reads. */
   reason?: string;
@@ -286,7 +307,10 @@ export interface Location {
 
 /** What a machine may reach on the internet. */
 export interface NetworkPolicy {
-  /** `"open"` (the whole internet), `"closed"` (nothing), or `"allowed"` (only `allow`). */
+  /**
+   * `"open"` (the whole internet), `"closed"` (no internet, though name lookups and some sites we host still work), or
+   * `"allowed"` (only `allow`).
+   */
   internet: "open" | "closed" | "allowed";
   /**
    * For `"allowed"`: domain names (exact, or a leading `*.` for every name under it) for HTTP and HTTPS, and IPv4/IPv6
@@ -450,11 +474,17 @@ export interface TeamRules {
   gpus: boolean;
   /** Whether its machines may have open internet; one open already stays open until changed. */
   open_internet: boolean;
-  /** What its machines may come to in a month, in dollars; null for no budget. */
+  /** The organisation's currency, which `month_budget` and `spent` are in. */
+  currency: Currency;
+  /** What its machines may come to in a month, in the organisation's currency; null for no budget. */
+  month_budget: number | null;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `month_budget`. */
   month_budget_usd: number | null;
   /** What its machines came to this month: shown to its managers, owners, admins and billing; null to its members. */
+  spent: number | null;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `spent`. */
   spent_usd: number | null;
-  /** Its machines whose internet is open; null as `spent_usd` is. */
+  /** Its machines whose internet is open; null as `spent` is. */
   open_machines: number | null;
   /** `any`, until a team chooses its models. */
   models: string;
@@ -813,6 +843,11 @@ export interface GpuOffer {
   ram_gb?: number;
   disk_gb?: number;
   location?: Location;
+  /** The account's currency, which `price_per_hour` is in. */
+  currency: Currency;
+  /** What an hour of it comes to, in the account's currency. */
+  price_per_hour: number;
+  /** The same in US dollars: the price list's own. */
   price_per_hour_usd: number;
   /** Can be interrupted at any time; cheaper for it. */
   interruptible?: boolean;
@@ -821,6 +856,8 @@ export interface GpuOffer {
 
 export interface GpuList {
   object: "list";
+  /** The account's currency, which each offer's `price_per_hour` is in. */
+  currency: Currency;
   /** False while GPU machines are not yet open to every account; the list shows what is coming. */
   for_sale: boolean;
   data: GpuOffer[];
@@ -836,32 +873,44 @@ export interface UsageLine {
   /** In an organisation, whose the machine is; null in a person's own account. */
   held_by?: HeldBy | null;
   running_seconds: number;
+  /** What it came to, in the account's currency. */
+  amount: number;
+  /** What it came to in US dollars, as it is counted. */
   usd: number;
 }
 
-/** Each machine's running time and cost in a month. */
+/**
+ * Each machine's running time and cost in a month: in the account's currency at Wheelmachine's rate now, and in US
+ * dollars as it is counted (`*_usd`).
+ */
 export interface Usage {
   object: "usage";
   month: string;
+  currency: Currency;
+  total: number;
   total_usd: number;
   machines: UsageLine[];
   /** What the account's folders came to in the month: to those who watch its money, null to anyone else. */
+  folders?: number | null;
   folders_usd?: number | null;
 }
 
 /**
- * What an entry of the credit is: `welcome` the $5 of free credit your own account gets; `machine_time` a
+ * What an entry of the credit is: `welcome` the free credit your own account gets - 5 of its currency; `machine_time` a
  * machine's running time of a day (UTC); `folders` what the account's folders kept a day; `purchase` credit bought,
  * paid through Paddle (and a disputed payment that came back); `refund` credit refunded through Paddle, or
  * disputed with a bank; `staff_credit` and `staff_debit` credit Wheelmachine's staff put in or took back.
  */
 export type CreditEntryKind = "welcome" | "machine_time" | "folders" | "purchase" | "refund" | "staff_credit" | "staff_debit";
 
-/** Credit put in (`amount_usd` above zero) or taken (below). */
+/** Credit put in (`amount` above zero) or taken (below). */
 export interface CreditEntry {
   id: string;
   object: "credit_entry";
   kind: CreditEntryKind;
+  /** In the account's currency, to the millionth. */
+  amount: number;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `amount`. */
   amount_usd: number;
   /** What it is, in words a person reads. */
   reason: string;
@@ -875,33 +924,43 @@ export interface CreditEntry {
 }
 
 /**
- * The account's credit - prepaid usage credit in dollars, for Wheelmachine alone - and a page of its entries, the
- * newest first. At zero or below the account cannot spend: its machines are paused, and none starts.
+ * The account's credit - prepaid usage credit for Wheelmachine alone, counted in the account's currency - and a page of
+ * its entries, the newest first. At zero or below the account cannot spend: its machines are paused, and none starts.
  */
 export interface CreditBalance {
   object: "credit";
   /** The account it is: your own, or the organisation's. */
   account: string;
+  /** The currency it is counted in. */
+  currency: Currency;
+  /** Whether the currency is fixed, by the account's first purchase or by Wheelmachine's support; until then `client.credit.setCurrency` changes it. */
+  currency_fixed: boolean;
+  /** The credit left, in the account's currency, to the millionth. */
+  balance: number;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `balance`. */
   balance_usd: number;
   empty: boolean;
   /**
-   * Whether credit can be bought here (`client.credit.buy`), in which amounts - dollars, one at a time - and what
-   * Paddle.js is opened with in a browser: Paddle's environment and its client-side token, made to be given to
-   * browsers. Closed, no amounts and no Paddle.
+   * Whether credit can be bought here (`client.credit.buy`), in which amounts - of the account's currency, one at a
+   * time - and what Paddle.js is opened with in a browser: Paddle's environment and its client-side token, made to be
+   * given to browsers. Closed, no amounts and no Paddle. (`amounts_usd`, deprecated: the same numbers.)
    */
-  buy: { open: boolean; amounts_usd: number[]; paddle: { environment: "sandbox" | "live"; client_token: string } | null };
+  buy: { open: boolean; amounts: number[]; amounts_usd: number[]; paddle: { environment: "sandbox" | "live"; client_token: string } | null };
   /**
    * Whether its use is taken now: `on`; `from` an account made before billing began, not charged before `from` (null
    * until its notice has gone out); `off` not charged at all.
    */
   charging?: { state: "on" | "from" | "off"; from: string | null };
   /** Below this the credit is running low, and those who buy it are e-mailed once. */
+  low?: number;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `low`. */
   low_usd?: number;
   /**
-   * The free credit your own account is still to get, once you link a GitHub account at least `github_min_days` old
-   * on the dashboard's Code page (`too_new_until`: the one linked is old enough then); null when there is none to get.
+   * The free credit your own account is still to get - 5 of its currency (`amount`; `usd`, deprecated, in dollars) -
+   * once you link a GitHub account at least `github_min_days` old on the dashboard's Code page (`too_new_until`: the
+   * one linked is old enough then); null when there is none to get.
    */
-  free_credit?: { usd: number; needs: "github"; github_min_days: number; too_new_until: string | null } | null;
+  free_credit?: { amount: number; usd: number; needs: "github"; github_min_days: number; too_new_until: string | null } | null;
   data: CreditEntry[];
   /** Where the page after this one begins, as `after`; null for the last. */
   next: string | null;
@@ -909,24 +968,29 @@ export interface CreditBalance {
 
 /**
  * A checkout started to buy credit. Nothing is charged until it is paid in Paddle's checkout - `checkout.url` opens it
- * on the dashboard's Billing page, for a person signed in there - and `amount_usd` of credit is there once Paddle says
- * the payment is complete.
+ * on the dashboard's Billing page, for a person signed in there - and `amount` of credit, in the account's currency, is
+ * there once Paddle says the payment is complete.
  */
 export interface CreditPurchase {
   object: "credit_purchase";
   id: string;
   /** The account the credit is for. */
   account: string;
+  currency: Currency;
+  amount: number;
+  /** @deprecated The same amount in US dollars at Wheelmachine's rate; read `amount`. */
   amount_usd: number;
   checkout: {
     provider: "paddle";
     environment: "sandbox" | "live";
     client_token: string;
+    /** The account's currency: each price is in it. */
+    currency: Currency;
     /** Paddle's id for the purchase's transaction, or null while it has none: a purchase can have one before it is paid. */
     transaction_id: string | null;
     /** Paddle's price of this purchase's amount, and the four amounts' prices. */
     price_id: string;
-    prices: { amount_usd: number; price_id: string }[];
+    prices: { amount: number; amount_usd: number; price_id: string }[];
     /** What Paddle's checkout is opened with, so that its payment names this purchase. */
     custom_data: Record<string, string>;
     url: string;
@@ -943,35 +1007,46 @@ export interface CreditParams {
 export interface UsageLimits {
   object: "usage_limits";
   month: string;
+  /** The account's currency: every amount is in it; each `*_usd` amount, deprecated, is the same in US dollars. */
+  currency: Currency;
   /** When limits for the month start again: the first of the next month, 00:00 UTC. */
   resets_at: string;
   alert_percents: number[];
   account: {
     name: string;
     kind: "person" | "org";
+    currency: Currency;
     /** The account's own limit; null for none, or when you are not shown it. */
+    month_cap: number | null;
     month_cap_usd: number | null;
     /** The lower of its own and Wheelmachine's: the one that applies. */
+    in_force_amount: number | null;
     in_force_usd: number | null;
     in_force: "account" | "wheelmachine" | "";
+    spent: number | null;
     spent_usd: number | null;
     percent: number | null;
     limited: boolean;
     set_by: { id: string; name: string } | null;
     set_at: string | null;
-    wheelmachine: { month_cap_usd: number | null; max_machines: number; max_vcpus: number | null };
+    wheelmachine: { month_cap: number | null; month_cap_usd: number | null; max_machines: number; max_vcpus: number | null };
     changed_by: string[];
     you_change: boolean;
   };
   teams: Array<{
-    id: string; name: string; month_budget_usd: number | null; spent_usd: number | null; percent: number | null; yours: boolean;
+    id: string; name: string; month_budget: number | null; month_budget_usd: number | null; spent: number | null; spent_usd: number | null;
+    percent: number | null; yours: boolean;
     changed_by: string[]; you_change: boolean;
   }>;
   people: Array<{
-    person: { id: string; name: string }; role: string; month_cap_usd: number | null; spent_usd: number | null; percent: number | null;
+    person: { id: string; name: string }; role: string; month_cap: number | null; month_cap_usd: number | null; spent: number | null;
+    spent_usd: number | null; percent: number | null;
     max_machines: number | null; max_vcpus: number | null; gpus: boolean; changed_by: string[]; you_change: boolean;
   }>;
-  yours: Array<{ scope: LimitHit["scope"]; name: string; limit_usd: number | null; spent_usd: number | null; percent: number | null; reached: boolean }>;
+  yours: Array<{
+    scope: LimitHit["scope"]; name: string; limit: number | null; limit_usd: number | null; spent: number | null; spent_usd: number | null;
+    percent: number | null; reached: boolean;
+  }>;
   passed: Array<{ scope: "account" | "team" | "person"; name: string; percent: number; at: string }>;
 }
 
@@ -1250,7 +1325,7 @@ export interface KeyCreateOptions extends CreateOptions {
 
 /** What a confirm code is for: a risky step, and what of it the code is bound to - as an error's `confirm` says it. */
 export interface ConfirmAsk {
-  step: "close_account" | "delete_org" | "hand_over" | "make_owner" | "full_access_key" | "key_making_key";
+  step: "close_account" | "delete_org" | "hand_over" | "make_owner" | "full_access_key" | "key_making_key" | "secrets_key";
   org?: string;
   to?: string;
   account?: string;
@@ -1340,6 +1415,12 @@ export interface ModelSupplier {
 /** The models of the account's AI keys, and their providers. */
 export interface ModelList {
   object: "list";
+  /**
+   * The account's currency, and what a US dollar is in it at Wheelmachine's rate (1 in an account counted in dollars):
+   * a provider's dollar price shown beside it as a guide ("$2, about £1.60"). The price itself is the provider's, in dollars.
+   */
+  currency?: Currency;
+  rate?: number;
   data: Model[];
   suppliers: ModelSupplier[];
   /** The list of the models the caller may use that applies to them - its models alone are in `data` then; null when none does. */

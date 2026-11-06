@@ -3029,7 +3029,7 @@ paths:
     put:
       tags: [Secrets]
       operationId: setSecret
-      summary: Set a secret, or set it anew
+      summary: Set a secret, or set it again
       description: |
         Needs the `cloud:secrets:write` scope and a key not limited to some projects: secrets belong to the account, and a key
         limited to some projects cannot set, delete or give them (403). The value is encrypted at once and never
@@ -3627,7 +3627,7 @@ paths:
     get:
       tags: [Account]
       operationId: getLimits
-      summary: Every limit that holds the account, and how near each is
+      summary: Every limit on the account, and how near each is
       description: |
         The limits for the month, in one place: the account's own and Wheelmachine's for it, the lower of which holds;
         in an organisation each team's budget and each person's own limits; those that apply to you, with how much of each

@@ -291,11 +291,11 @@ export class Wheelmachine {
   }
 
   /**
-   * Set the account's own limit for the month, in dollars, or take it away with null: in your own account, with a key
-   * that holds `cloud:*`; in an organisation, an owner's.
+   * Set the account's own limit for the month, in the account's currency, or take it away with null: in your own
+   * account, with a key that has `cloud:*`; in an organisation, an owner's.
    */
-  async setMonthLimit(usd: number | null, options: RequestOptions = {}): Promise<WithResponse<UsageLimits>> {
-    const { data, info } = await this.#core.json<UsageLimits>({ method: "PUT", path: "/v1/usage/limits/account", json: { month_cap_usd: usd }, options });
+  async setMonthLimit(amount: number | null, options: RequestOptions = {}): Promise<WithResponse<UsageLimits>> {
+    const { data, info } = await this.#core.json<UsageLimits>({ method: "PUT", path: "/v1/usage/limits/account", json: { month_cap: amount }, options });
     return withResponse(data ?? ({} as UsageLimits), info);
   }
 

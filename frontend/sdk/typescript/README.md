@@ -42,17 +42,15 @@ const client = new Wheelmachine({ apiKey: key.secret });
 
 ```ts
 const credit = await client.credit.get(); // what is left: running time taken from it
-console.log(credit.balance_usd, credit.empty);
-for await (const entry of client.credit.entries()) console.log(entry.at, entry.kind, entry.amount_usd, entry.machine_name);
-const purchase = await client.credit.buy(25); // buy $25: pay it at purchase.checkout.url
+console.log(credit.balance, credit.currency, credit.empty);
+for await (const entry of client.credit.entries()) console.log(entry.at, entry.kind, entry.amount, entry.machine_name);
+const purchase = await client.credit.buy(25); // buy 25 of the account's currency: pay it at purchase.checkout.url
 console.log(purchase.checkout.url);
+await client.credit.setCurrency("EUR"); // count the credit in euros, until your first purchase, or until we change it for you
 ```
 
-At zero the account's machines are paused, and none starts until the balance is above $0. Credit is bought in $10, $25, $50
-or $100, from Paddle, our reseller, which adds any sales tax or VAT and e-mails the receipt and tax invoice: open
-`checkout.url` in a browser signed in to the dashboard, in the same account, and the credit is there once Paddle
-confirms the payment. In an organisation the credit is the organisation's: read by its owners, admins and billing, and
-bought by its owners and billing.
+Credit is bought in 10, 25, 50 or 100 of your account's currency through Paddle. See
+https://docs.wheelmachine.ai/billing.html.
 
 ## Organisations and the audit
 

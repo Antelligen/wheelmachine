@@ -41,7 +41,7 @@ test("credit run out says so", async (t) => {
 test("credit is bought in Paddle's checkout", async (t) => {
   const { api, client } = await setup(t);
   await assert.rejects(client.credit.buy(25), (err) => err.code === "not_open");
-  assert.deepEqual((await client.credit.get()).buy, { open: false, amounts_usd: [], paddle: null });
+  assert.deepEqual((await client.credit.get()).buy, { open: false, amounts: [], amounts_usd: [], paddle: null });
   api.buyOpen = true;
   const credit = await client.credit.get();
   assert.deepEqual([credit.buy.open, credit.buy.amounts_usd, credit.buy.paddle?.environment], [true, [10, 25, 50, 100], "sandbox"]);
@@ -53,4 +53,26 @@ test("credit is bought in Paddle's checkout", async (t) => {
   assert.deepEqual([sent.method, sent.path], ["POST", "/v1/credit/purchases"]);
   assert.ok(sent.headers["idempotency-key"], "a purchase is a create: it carries an Idempotency-Key");
   await assert.rejects(client.credit.buy(30), (err) => err.code === "invalid_request");
+});
+
+test("an account counted in pounds: its credit, a purchase and its limit in pounds, and its currency changed until it is fixed", async (t) => {
+  const { api, client } = await setup(t);
+  api.buyOpen = true;
+  let credit = await client.credit.get();
+  assert.deepEqual([credit.currency, credit.currency_fixed, credit.balance, credit.buy.amounts], ["USD", false, 5, [10, 25, 50, 100]]);
+  credit = await client.credit.setCurrency("GBP");
+  assert.deepEqual([credit.currency, credit.balance, credit.balance_usd], ["GBP", 5, 6.25]);
+  assert.deepEqual([api.seen.at(-1).method, api.seen.at(-1).path, api.seen.at(-1).json()], ["PUT", "/v1/credit/currency", { currency: "GBP" }]);
+  const purchase = await client.credit.buy(25);
+  assert.deepEqual([purchase.currency, purchase.amount, purchase.amount_usd, purchase.checkout.currency, purchase.checkout.prices[1].amount],
+    ["GBP", 25, 31.25, "GBP", 25]);
+  assert.deepEqual(api.seen.at(-1).json(), { amount: 25 });
+  const set = await client.setMonthLimit(160);
+  assert.deepEqual([set.currency, set.account.month_cap, set.account.month_cap_usd, set.yours[0].limit], ["GBP", 160, 200, 160]);
+  const me = await client.me();
+  assert.deepEqual([me.standing.currency, me.standing.credit, me.standing.credit_usd], ["GBP", 5, 6.25]);
+  const gpus = await client.gpus();
+  assert.deepEqual([gpus.currency, gpus.data[0].price_per_hour, gpus.data[0].price_per_hour_usd], ["GBP", 2.024, 2.53]);
+  api.currencyFixed = true;
+  await assert.rejects(client.credit.setCurrency("EUR"), (err) => err.status === 409 && err.code === "conflict");
 });

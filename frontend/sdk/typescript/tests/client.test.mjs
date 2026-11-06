@@ -447,10 +447,10 @@ test("limits, and the account's own set and taken away", async (t) => {
   const none = await client.limits();
   assert.deepEqual([none.account.limited, none.account.month_cap_usd, none.alert_percents], [false, null, [50, 75, 90, 100]]);
   const set = await client.setMonthLimit(50);
-  assert.deepEqual(api.seen.at(-1).json(), { month_cap_usd: 50 });
+  assert.deepEqual(api.seen.at(-1).json(), { month_cap: 50 });
   assert.deepEqual([set.account.month_cap_usd, set.account.in_force, set.account.percent, set.yours[0].scope], [50, "account", 25, "account"]);
   await client.setMonthLimit(null);
-  assert.deepEqual(api.seen.at(-1).json(), { month_cap_usd: null });
+  assert.deepEqual(api.seen.at(-1).json(), { month_cap: null });
 });
 
 test("keys, and the secret shown once", async (t) => {
