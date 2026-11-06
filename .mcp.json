@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "wheelmachine": {
+      "type": "http",
+      "url": "https://api.wheelmachine.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${user_config.api_key}"
+      },
+      "timeout": 600000
+    }
+  }
+}

@@ -1,10 +1,11 @@
 name: release-clients
 
 # The client tools' releases, by tag, one tool a tag: wm-v<version> for wm and wm-mcp (frontend/cli), py-v<version> for
-# the Python library (frontend/sdk/python), ts-v<version> for the TypeScript library (frontend/sdk/typescript). The
-# version in the tag must be the one the tool keeps - Version in frontend/cli/api/client.go, __version__ in
-# frontend/sdk/python/src/wheelmachine/_version.py, version in frontend/sdk/typescript/package.json - and the tool's
-# CHANGELOG.md must have it.
+# the Python library (frontend/sdk/python), ts-v<version> for the TypeScript library (frontend/sdk/typescript),
+# plugin-v<version> for the plugin and the Gemini CLI extension (frontend/plugins/wheelmachine). The version in the tag
+# must be the one the tool keeps - Version in frontend/cli/api/client.go, __version__ in
+# frontend/sdk/python/src/wheelmachine/_version.py, version in frontend/sdk/typescript/package.json, version in the
+# plugin's .claude-plugin/plugin.json and gemini-extension.json alike - and the tool's CHANGELOG.md must have it.
 #
 # Off until the owner has set up what it publishes with: every job waits for the variable CLIENTS_RELEASE to be "true"
 # in the repository it runs in.
@@ -12,7 +13,9 @@ name: release-clients
 # This one file runs in two repositories. Here, in the private one, a tag hands the tool over: its folder exactly as
 # the tag has it - with the API's contract, the public repository's README and this file - is committed to the public
 # repository that CLIENTS_PUBLIC_REPO names, and tagged there the same, with the token CLIENTS_PUBLIC_TOKEN. There, the
-# same tag tests the tool, builds it, attests it and publishes it. It is built and published from the public
+# same tag tests the tool, builds it, attests it and publishes it. The plugin is handed over to the public repository's
+# root, where a plugin marketplace and a Gemini CLI extension are looked for: published by being there, it has nothing to
+# build. It is built and published from the public
 # repository because each thing published says where it was built, and only there can anyone read the source it was
 # built from: npm makes provenance only for a public repository, and GitHub attests a private repository's builds only
 # on Enterprise Cloud.
@@ -21,7 +24,7 @@ name: release-clients
 
 on:
   push:
-    tags: ["wm-v*", "py-v*", "ts-v*"]
+    tags: ["wm-v*", "py-v*", "ts-v*", "plugin-v*"]
 
 permissions: {}
 
@@ -57,6 +60,9 @@ jobs:
                    have=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' frontend/sdk/python/src/wheelmachine/_version.py) ;;
             ts-v*) dir=frontend/sdk/typescript
                    have=$(python3 -c 'import json; print(json.load(open("frontend/sdk/typescript/package.json"))["version"])') ;;
+            plugin-v*) dir=frontend/plugins/wheelmachine
+                   # (one version, in the plugin and in the extension: two that differ are both said)
+                   have=$(python3 -c 'import json; d = "frontend/plugins/wheelmachine/"; a = json.load(open(d + ".claude-plugin/plugin.json"))["version"]; b = json.load(open(d + "gemini-extension.json"))["version"]; print(a if a == b else a + " and " + b)') ;;
             *) echo "::error::$TAG is not a tag of a tool"; exit 1 ;;
           esac
           want=${TAG#*-v}
@@ -101,6 +107,10 @@ jobs:
             wm-v*) go vet ./... && go test -count=1 ./... && python3 -B release.py --help >/dev/null ;;
             py-v*) python3 -m pip install -q pytest==9.2.0 && python3 -m pytest -q -p no:cacheprovider ;;
             ts-v*) npm ci --no-audit --no-fund && npm test ;;
+            plugin-v*) for f in .claude-plugin/marketplace.json .claude-plugin/plugin.json .mcp.json gemini-extension.json; do
+                         python3 -m json.tool "$f" >/dev/null || { echo "::error::$f is not JSON"; exit 1; }
+                       done
+                       grep -qx 'name: wheelmachine' skills/wheelmachine/SKILL.md && test -s GEMINI.md ;;
           esac
       # the token is in the job from here on, and nothing of the repository's is run after it
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,10 +129,20 @@ jobs:
             exit 1
           fi
           # the folder as the tag has it - its tracked files, nothing left over from the version before - and beside it
-          # the contract, this file, and the public repository's front page and licence
-          rm -rf "public/$DIR"
-          git -C source archive --format=tar HEAD -- "$DIR" contracts/openapi.yaml .github/workflows/release-clients.yml |
-            tar -x -C public
+          # the contract, this file, and the public repository's front page and licence. The plugin's folder is the
+          # public repository's root: what it holds goes there, but for its README and CHANGELOG.md, this repository's
+          # notes of it, and what it held before goes first
+          case "$TAG" in
+            plugin-v*)
+              for f in .claude-plugin .mcp.json skills gemini-extension.json GEMINI.md $(git -C source ls-tree --name-only "HEAD:$DIR"); do
+                case "$f" in README.md|CHANGELOG.md) ;; *) rm -rf "public/$f" ;; esac
+              done
+              git -C source archive --format=tar "HEAD:$DIR" | tar -x -C public --anchored --exclude=README.md --exclude=CHANGELOG.md ;;
+            *)
+              rm -rf "public/$DIR"
+              git -C source archive --format=tar HEAD -- "$DIR" | tar -x -C public ;;
+          esac
+          git -C source archive --format=tar HEAD -- contracts/openapi.yaml .github/workflows/release-clients.yml | tar -x -C public
           cp source/frontend/public-repo/README.md public/README.md
           cp source/frontend/cli/LICENSE public/LICENSE
           git -C public add -A

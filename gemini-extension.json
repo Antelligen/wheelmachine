@@ -1,0 +1,22 @@
+{
+  "name": "wheelmachine",
+  "version": "0.1.0",
+  "description": "Make, fork and run Wheelmachine machines, and open their apps, from Gemini CLI.",
+  "contextFileName": "GEMINI.md",
+  "settings": [
+    {
+      "name": "Wheelmachine API key",
+      "description": "A key of your own for the agent (ak_live_...), made on the dashboard's Keys page or with wm keys create. It is sent to https://api.wheelmachine.ai alone.",
+      "envVar": "WHEELMACHINE_API_KEY",
+      "sensitive": true
+    }
+  ],
+  "mcpServers": {
+    "wheelmachine": {
+      "httpUrl": "https://api.wheelmachine.ai/mcp",
+      "headers": {
+        "Authorization": "Bearer ${WHEELMACHINE_API_KEY}"
+      }
+    }
+  }
+}

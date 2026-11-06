@@ -1,0 +1,21 @@
+{
+  "name": "wheelmachine",
+  "owner": {
+    "name": "Antelligen",
+    "email": "team@antelligen.com"
+  },
+  "metadata": {
+    "description": "Wheelmachine: computers in the cloud for agents, made usually in about a second and paid by the second."
+  },
+  "plugins": [
+    {
+      "name": "wheelmachine",
+      "source": "./",
+      "description": "Make, fork and run Wheelmachine machines, and open their apps, from your agent.",
+      "homepage": "https://docs.wheelmachine.ai/mcp.html",
+      "repository": "https://github.com/Antelligen/wheelmachine",
+      "license": "Apache-2.0",
+      "keywords": ["wheelmachine", "cloud", "machines", "sandbox", "mcp"]
+    }
+  ]
+}

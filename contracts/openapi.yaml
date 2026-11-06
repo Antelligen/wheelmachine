@@ -33,21 +33,37 @@ tags:
     description: Who you are, what was done in your account, and what it costs.
   - name: Billing
     description: |
-      Every account has a balance of credit: prepaid usage credit in US dollars, for Wheelmachine alone. Your own account
-      gets $5 of free credit, once for each person: at once with a GitHub sign-in; with a Google sign-in, once you link a
-      GitHub account at least `github_min_days` old on the dashboard's Code page (`free_credit` says so while it waits).
-      Another account of the same person gets none, and a new organisation starts with none.
+      Every account has a balance of credit: prepaid usage credit, for Wheelmachine alone, counted in the account's
+      currency (`currency`): pounds sterling for an account made in the United Kingdom, euros for one made in the euro
+      area, US dollars for every other - India pays for its credit in rupees and is counted in dollars. A new account's
+      currency is chosen by the time zone of the browser that signed it up; it can be changed until the account's first
+      purchase (`PUT /v1/credit/currency`), and stays after it. Prices are set in US dollars and taken in pounds and
+      euros at Wheelmachine's rates (a US dollar is £0.80, €0.90): a new rate applies to what is used from then on,
+      never to credit already bought.
+
+      Every amount is said in the account's currency (`balance`, `amount`, `spent`, `month_cap`, ...) with `currency`
+      beside it; each `*_usd` field beside one is the same amount in US dollars at Wheelmachine's rate - the very number
+      in an account counted in dollars - kept for clients from before, and deprecated: it goes no sooner than 90 days
+      after `wm` and both libraries read the new fields. An amount is set in the account's currency (`month_cap`,
+      `alert`, `month_budget`, `amount`): a `*_usd` field set in an account counted in pounds or euros is refused (400),
+      never converted.
+
+      Your own account gets 5 of its currency in free credit ($5, £5 or €5), once for each person: at once with a GitHub
+      sign-in; with a Google sign-in, once you link a GitHub account at least `github_min_days` old on the dashboard's
+      Code page (`free_credit` says so while it waits). Another account of the same person gets none, and a new
+      organisation starts with none.
 
       Machines' running time is taken from credit every minute, at the prices the API shows. Folders cost $0.03 a GB a
-      month, counted by the day. Machines' disks, backups and archived machines are not charged today.
+      month (£0.024, €0.027), counted by the day. Machines' disks, backups and archived machines are not charged today.
 
       At zero or below, the account's running machines are paused with their memory kept, and making, starting or forking
-      a machine, running a command or reaching a file answers `402 payment_required` until the balance is above $0. Its
+      a machine, running a command or reaching a file answers `402 payment_required` until the balance is above zero. Its
       folders turn read-only, and their files are deleted 30 days later unless credit is bought first; each e-mail gives
       the day. In an organisation the credit is the organisation's: its owners, admins and billing read it, and its owners
       and billing buy it.
 
-      Credit is bought in $10, $25, $50 or $100 at a time, from Paddle, the merchant of record: Paddle takes the
+      Credit is bought in 10, 25, 50 or 100 of the account's currency at a time - £10, €25, $50 - from Paddle, the
+      merchant of record, and paid in that currency (in India, a dollar account pays in rupees): Paddle takes the
       payment, adds any sales tax or VAT where you are, and sends you the receipt and the tax invoice. `POST
       /v1/credit/purchases` starts a checkout for one amount, which you pay in Paddle's checkout - the dashboard's
       Billing page opens it - and the credit is there once Paddle says the payment is complete. Credit Paddle refunds,
@@ -152,6 +168,11 @@ tags:
       of error (403), naming the models on the list. A list covers the organisation's AI keys, not a person's own. A
       list, or a change of a person's role or teams, reaches their running machines at once, and the others when they
       next start.
+  - name: Agents
+    description: |
+      The MCP server, for agents, at `https://api.wheelmachine.ai/mcp`: an agent's MCP client connects with an API key,
+      with nothing to install, and is given wm-mcp's tools, with the same names and arguments, each made of this API's
+      own calls with that key.
   - name: Catalogue
     description: Sizes, places and GPUs, with prices.
 paths:
@@ -1479,7 +1500,8 @@ paths:
         Needs `cloud:keys:write`. A new key holds only scopes and projects the calling key holds, so a key can never make a
         stronger one. The secret is in this answer only. In an organisation, a key never holds more than the person may do
         there, and is limited to their teams when their role is. A key with full access (`cloud:*`), or one that can make keys
-        (`cloud:keys:write`), also needs a code we e-mail to the person (`X-Confirm-Code`; see `POST /v1/confirm-codes`).
+        (`cloud:keys:write`) or give secrets (`cloud:secrets:write`), also needs a code we e-mail to the person
+        (`X-Confirm-Code`; see `POST /v1/confirm-codes`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/ConfirmCode"
@@ -1499,7 +1521,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
           description: |
-            A scope or a rate this key does not hold; or, for a key with full access, `confirm_required` or `confirm_wrong`: see `POST /v1/confirm-codes`.
+            A scope or a rate this key does not hold; or, for a key with full access, or that makes keys or gives secrets, `confirm_required` or `confirm_wrong`: see `POST /v1/confirm-codes`.
         "404":
           $ref: "#/components/responses/NotFound"
           description: "A project in `projects` is not one this key reaches"
@@ -2503,8 +2525,8 @@ paths:
         desktop is off 409, and one that cannot be watched yet 409 until it next starts.
 
         Over the socket, **binary** messages carry the screen's own stream both ways - RFB (RFC 6143), the protocol
-        VNC viewers speak - so any viewer that speaks it over a WebSocket shows the desktop and works it: keyboard,
-        pointer, the desktop's size following the window's, and the clipboard. Text messages you send are not passed
+        VNC viewers speak - so any viewer that speaks it over a WebSocket shows the desktop, whose size is fixed, and
+        works it: keyboard, pointer and the clipboard. Text messages you send are not passed
         on. A final **text** message `{"reason": ..., "status": ..., "message": ...}` says why the screen ended when it
         did not end by itself, just before the socket closes; the desktop closing it is a plain close (1000).
 
@@ -3066,7 +3088,8 @@ paths:
         projects' machines get; in an organisation the keys are the organisation's, and nobody sees their values.
 
         Each model says what it costs and how it scores, where these are known. Its `price` is the list price of the
-        provider that bills for it - the one whose key it is - a million tokens in and out, in US dollars: OpenRouter's
+        provider that bills for it - the one whose key it is - a million tokens in and out, in US dollars, never turned
+        into another currency (an account in pounds or euros may show it beside its own currency at `rate`, as a guide): OpenRouter's
         from its own list for your key, the others' from each provider's own price page, with
         the day it was checked. Wheelmachine charges nothing for a model: you pay its provider with your own key. Its
         `intelligence` is its score on LMArena's text leaderboard (CC BY 4.0): the best
@@ -3134,7 +3157,7 @@ paths:
       operationId: setOrganisationAllowedModels
       summary: Set the models everyone in the organisation may use
       description: |
-        For owners and admins, with a key for the whole organisation (`cloud:machines:write`). One to ten models, each
+        For owners and admins, signed in or with a `cloud:*` key for the whole organisation. One to ten models, each
         one a provider of the organisation's AI keys lists for the key now (`GET /v1/models`), in order: the first is the
         one an agent starts on where its person's choice is not one of them, or they chose none. It holds everyone
         without a list of a team, a role or their own. A choice a person made that is not on it is set aside - their
@@ -3170,7 +3193,7 @@ paths:
       operationId: clearOrganisationAllowedModels
       summary: Let everyone in the organisation use every model again
       description: |
-        For owners and admins (`cloud:machines:write`). Those it applied to are limited to the lists of their team, role or own,
+        For owners and admins, signed in or with a `cloud:*` key. Those it applied to are limited to the lists of their team, role or own,
         where they have one, else to none. Doing it twice changes nothing.
       responses:
         "204": { description: Done }
@@ -3224,7 +3247,7 @@ paths:
       operationId: clearTeamAllowedModels
       summary: Take a team's list away
       description: |
-        For owners and admins (`cloud:machines:write`): the team's people are limited to the organisation's list again,
+        For owners and admins, signed in or with a `cloud:*` key: the team's people are limited to the organisation's list again,
         where it keeps one. A list of a team since deleted is taken away too. Doing it twice changes nothing.
       responses:
         "204": { description: Done }
@@ -3288,7 +3311,7 @@ paths:
       tags: [Models]
       operationId: clearRoleAllowedModels
       summary: Take a role's list away
-      description: For owners and admins (`cloud:machines:write`). Doing it twice changes nothing.
+      description: For owners and admins, signed in or with a `cloud:*` key. Doing it twice changes nothing.
       responses:
         "204": { description: Done }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -3345,7 +3368,7 @@ paths:
       operationId: clearPersonAllowedModels
       summary: Take a person's own list away
       description: |
-        For owners and admins (`cloud:machines:write`): the person is limited to their role's, team's or organisation's
+        For owners and admins, signed in or with a `cloud:*` key: the person is limited to their role's, team's or organisation's
         list again, where there is one. A list of a person since gone is taken away too. Doing it twice changes nothing.
       responses:
         "204": { description: Done }
@@ -3526,7 +3549,7 @@ paths:
       tags: [Catalogue]
       operationId: listSizes
       summary: The sizes a machine without a GPU comes in, and what an hour of each costs
-      description: What an hour of a machine of each size running comes to - the price its running time is counted at. A paused machine runs no time. Only the sizes offered now are listed.
+      description: What an hour of a machine of each size running comes to - the price its running time is counted at - in US dollars, and in the account's currency at Wheelmachine's rate, which it is taken in. A paused machine runs no time. Only the sizes offered now are listed.
       responses:
         "200":
           description: The sizes, the smallest first
@@ -3635,11 +3658,12 @@ paths:
       operationId: setAccountLimit
       summary: Set the account's own limit for the month
       description: |
-        Dollars a month, from 0 to 10000000, to the cent; null takes it away. Once the account's machines come to it,
+        An amount a month in the account's currency (`month_cap`), from 0 to 10000000, to the cent; null takes it away.
+        `month_cap_usd` is taken in an account counted in dollars alone. Once the account's machines come to it,
         they pause with everything in them kept, and nothing starts until the next month or a higher limit. Set in your
         own account, with a key that holds `cloud:*`; in an organisation by its owners (with a key, one that holds
         `cloud:*`) and by billing, signed in to the dashboard - billing's keys only read. It may not be above
-        Wheelmachine's limit for the account, where that is set (`account.wheelmachine.month_cap_usd`). Each change is
+        Wheelmachine's limit for the account, where that is set (`account.wheelmachine.month_cap`). Each change is
         in the audit (`account.limit`).
       requestBody:
         required: true
@@ -3654,7 +3678,7 @@ paths:
               schema: { $ref: "#/components/schemas/UsageLimits" }
         "400":
           $ref: "#/components/responses/BadRequest"
-          description: "`month_cap_usd` is left out, is neither null nor dollars from 0 to 10000000, or is above Wheelmachine's limit"
+          description: "`month_cap` is left out, is neither null nor an amount from 0 to 10000000, or is above Wheelmachine's limit; or `month_cap_usd` is said in an account counted in pounds or euros"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           $ref: "#/components/responses/Forbidden"
@@ -3690,7 +3714,8 @@ paths:
       operationId: setSpendAlert
       summary: Set the account's spend alert
       description: |
-        Dollars a month, from 0.01 to 10000000, to the cent; null takes the alert away. Set in your own account, and in
+        An amount a month in the account's currency (`alert`), from 0.01 to 10000000, to the cent; null takes the alert
+        away. `alert_usd` is taken in an account counted in dollars alone. Set in your own account, and in
         an organisation by its owners and admins - with a key, one that holds `cloud:*`. An amount is told once a month;
         moved, it is told again when it is passed.
       requestBody:
@@ -3706,7 +3731,7 @@ paths:
               schema: { $ref: "#/components/schemas/SpendAlerts" }
         "400":
           $ref: "#/components/responses/BadRequest"
-          description: "`alert_usd` is left out, or is neither null nor dollars from 0.01 to 10000000"
+          description: "`alert` is left out, or is neither null nor an amount from 0.01 to 10000000; or `alert_usd` is said in an account counted in pounds or euros"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404":
@@ -3893,8 +3918,8 @@ paths:
       operationId: getCreditCheckout
       summary: Checkout in the page
       description: |
-        What the dashboard's Billing page needs to open Paddle's checkout. Read by those who buy the account's credit, as
-        `POST /v1/credit/purchases` is.
+        What the dashboard's Billing page needs to open Paddle's checkout, in the account's currency. Read by those who buy
+        the account's credit, as `POST /v1/credit/purchases` is.
       responses:
         "200":
           description: What the checkout is opened with
@@ -3915,14 +3940,52 @@ paths:
           $ref: "#/components/responses/Unavailable"
           description: Paddle's prices could not be read just now; try again in a moment
 
+  /v1/credit/currency:
+    put:
+      tags: [Billing]
+      operationId: setCreditCurrency
+      summary: Change the account's currency
+      description: |
+        The currency the account's credit is counted in: `USD`, `GBP` or `EUR`, until its first purchase is paid - after
+        it, the currency stays (`currency_fixed`), unless it was set wrongly: Wheelmachine's support can change it, which
+        fixes it too. The credit keeps its value
+        at Wheelmachine's rates - but the free credit, which becomes 5 of the new currency - and the account's limits,
+        team budgets and spend alert are turned into it to the cent. A checkout opened before the change gives no
+        credit if it is paid after it: its payment is refunded in full. Changed by whoever buys the account's credit:
+        in your own account, you; in an organisation, its owners and billing - signed in to the dashboard, or with a
+        key of full access (`cloud:*`); billing's keys only read. Each change is in the audit (`credit.currency`).
+        Answers the credit, as `GET /v1/credit` does.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreditCurrencySet" }
+      responses:
+        "200":
+          description: The credit, in its new currency
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credit" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+          description: "`currency` is not `USD`, `GBP` or `EUR`"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: An organisation's admin or member, a key without full access (`cloud:*`), billing's key, or a key limited to some projects
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: The account's currency is fixed, by its first purchase or by Wheelmachine's support
+
   /v1/credit/purchases:
     post:
       tags: [Billing]
       operationId: buyCredit
       summary: Buy credit
       description: |
-        Starts a checkout for one of the amounts in `buy.amounts_usd` - $10, $25, $50 or $100 - of credit for the
-        account, and answers where it is paid. Nothing is charged until you pay in Paddle's checkout: open
+        Starts a checkout for one of the amounts in `buy.amounts` - 10, 25, 50 or 100 of the account's currency - of
+        credit for the account, and answers where it is paid. Nothing is charged until you pay in Paddle's checkout: open
         `checkout.url` in a browser signed in to the dashboard, in the account it is for, and the checkout opens on
         it. Paddle adds any sales tax or VAT where you are and sends you the receipt and the tax invoice; the credit
         itself is there once Paddle says the payment is complete, usually within seconds. In an organisation, its
@@ -3947,7 +4010,7 @@ paths:
               schema: { $ref: "#/components/schemas/CreditPurchase" }
         "400":
           $ref: "#/components/responses/BadRequest"
-          description: "`amount_usd` is not one of the amounts"
+          description: "`amount` is not one of the amounts; or `amount_usd` is said in an account counted in pounds or euros"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403":
           $ref: "#/components/responses/Forbidden"
@@ -4200,16 +4263,16 @@ paths:
       description: |
         These steps need a 6-digit code we e-mail you: closing your account; deleting an organisation, and transferring one
         to another owner - each its primary owner's alone; making someone an owner, by their role or by an
-        invitation, and sending an owner's invitation again; and making a key with full access (`cloud:*`) or one that
-        makes keys (`cloud:keys:write`) - by a key or signed in, and for a program given either as it signs in through
-        the browser. Made without it, the step is refused with `403 confirm_required`, and the error's `confirm` says
+        invitation, and sending an owner's invitation again; and making a key with full access (`cloud:*`), one that
+        makes keys (`cloud:keys:write`) or one that gives secrets (`cloud:secrets:write`) - by a key or signed in, and for
+        a program given any of these as it signs in through the browser. Made without it, the step is refused with `403 confirm_required`, and the error's `confirm` says
         what the code must be for: send that here, and the code goes to your e-mail address. Then make the same call
         again with it in `X-Confirm-Code`.
 
         A code is yours alone, for that step and what `confirm` binds it to, and works once, for 10 minutes. Five wrong tries use
         it up, and a new code cancels the ones before. Too many asks or wrong tries answer `429`. No code goes to an address that
         bounced for good or marked us as spam (`409`). Closing an account, and the steps of an organisation, are done signed in,
-        never with a key; a key asks for a code for a key with full access, which goes to its person.
+        never with a key; a key asks for a code for a key it makes, which goes to its person.
       requestBody:
         required: true
         content:
@@ -4455,8 +4518,8 @@ paths:
       operationId: setProtectedBranches
       summary: Set the branches no machine pushes to
       description: |
-        The organisation's owners and admins, or a person in their own account. No machine of the account pushes to
-        these branches: changes reach them through a pull request (a merge request on GitLab). `main`, `master` and
+        The organisation's owners and admins, or a person in their own account: signed in, or with a `cloud:*` key of
+        the whole account. No machine of the account pushes to these branches: changes reach them through a pull request (a merge request on GitLab). `main`, `master` and
         `release/**` until it is set; an empty list protects none. Patterns as GitHub's: `*` is any run of characters
         but `/`, `**` any run with `/` too, `?` one character but `/`. At most 50. Every machine is told at once.
       requestBody:
@@ -5177,6 +5240,74 @@ paths:
       responses:
         "303": { description: "Back to the dashboard's Code page, with `gitlab=` saying what became of it" }
 
+  /mcp:
+    post:
+      tags: [Agents]
+      operationId: callMcp
+      summary: Speak MCP with the server for agents
+      description: |
+        MCP's streamable HTTP transport, one JSON-RPC 2.0 message a call. A request is answered as JSON, with no stream
+        and no session; a notification or a response is taken with `202`, and nothing is in the answer. `GET` and `DELETE`
+        are answered `405` (`Allow: POST`): the server opens no stream and keeps no session. It speaks MCP 2026-07-28,
+        where each request carries its version and the client's capabilities in `params._meta`, and 2025-11-25,
+        2025-06-18 and 2025-03-26, which begin with `initialize`; a request whose params carry no version is
+        taken as its `MCP-Protocol-Version` header says, and as 2025-03-26 when it has none. The methods are
+        `initialize`, `ping`, `tools/list`, `tools/call` and `server/discover`. Its tools are wm-mcp's, and each is made of
+        this API's own calls with this call's key: a tool does only what the key may, each of its calls counts against
+        the key's calls a minute as this one does and is audited as it is when made alone, and the account's audit has a
+        line of the tool's own (`mcp.tool`), with how it ended. A tool that fails answers a result marked `isError`, its
+        text the API's `status`, `code`, `detail` and `request_id`, the same `request_id` as this call's and as those of
+        the API's calls it made. A call is not tried again, and carries no `Idempotency-Key`: a temporary error comes
+        back at once, with `retry_after_s`. A message is at most 8 MiB, and a message or an answer that moves too slowly
+        is cut off. A key has at most 16 calls going at once, a person's own account 16, an organisation 32 and a person
+        32 across all of theirs. At most 128 messages or answers of over 64 KiB move at once across everyone's calls:
+        over that, a long message is answered `429`; a shorter call never is, and an answer is never refused.
+      security:
+        - key: []
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          description: The version the client speaks, after `initialize`.
+          schema: { type: string, examples: ["2025-06-18"] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/McpMessage" }
+      responses:
+        "200":
+          description: The request's answer, in JSON-RPC
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpAnswer" }
+        "202": { description: "A notification or a response, taken: nothing in the answer" }
+        "400":
+          description: A message that cannot be read, or an `MCP-Protocol-Version` not spoken - in JSON-RPC, its `id` null when it had none
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/McpAnswer" }
+        "401":
+          description: No key, or a key that does not work; `WWW-Authenticate` says `Bearer`
+          headers:
+            WWW-Authenticate:
+              description: "`Bearer`: the server takes an API key."
+              schema: { type: string }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: A key made for other work, which holds no machine scope; or the dashboard's sign-in, which the server does not take
+        "408":
+          $ref: "#/components/responses/Timeout"
+          description: The message came too slowly
+        "413":
+          $ref: "#/components/responses/TooLarge"
+          description: A message of more than 8 MiB
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+          description: The key's calls a minute are used up, this call's own or a tool's; or too many calls, or long messages, are going at once
+
 components:
   securitySchemes:
     key:
@@ -5417,6 +5548,50 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
 
   schemas:
+    McpMessage:
+      type: object
+      required: [jsonrpc]
+      description: One JSON-RPC 2.0 message of MCP - a request, with an `id`; a notification, without one; or a response.
+      properties:
+        jsonrpc: { const: "2.0" }
+        id:
+          type: [string, number]
+          description: A request's id, which its answer carries; a notification has none.
+        method:
+          type: string
+          description: "`initialize`, `ping`, `tools/list`, `tools/call` or `server/discover`; for a notification, `notifications/` and its kind."
+          examples: ["tools/call"]
+        params:
+          type: object
+          description: |
+            The method's parameters: for `tools/call`, the tool's `name` and its `arguments`. With MCP 2026-07-28, `_meta`
+            carries `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`.
+    McpAnswer:
+      type: object
+      required: [jsonrpc, id]
+      description: A request's answer in JSON-RPC 2.0 - its `result`, or its `error`.
+      properties:
+        jsonrpc: { const: "2.0" }
+        id:
+          type: [string, number, "null"]
+          description: The request's id; null for a message whose id could not be read.
+        result:
+          type: object
+          description: |
+            What the method gives. A tool's (`tools/call`) is `{"content": [{"type": "text", "text": ...}], "isError": ...}`:
+            its text is compact JSON - the API's answer, or the tool's own - and, with `isError`, an `error` holding the
+            API's `status`, `code`, `detail` and `request_id`, and `retry_after_s` when the API asked for a wait.
+        error:
+          type: object
+          required: [code, message]
+          description: Why the request was not served, in JSON-RPC's codes.
+          properties:
+            code:
+              type: integer
+              description: "-32700: the body is not JSON; -32600: not a message; -32601: no such method; -32602: parameters that are not right, or no such tool; -32022: a version not spoken."
+            message: { type: string }
+            data: { type: object, description: "With -32022 and with `initialize` refused, the versions spoken (`supported`)." }
+
     Problem:
       type: object
       required: [type, title, status, code]
@@ -5450,16 +5625,16 @@ components:
       properties:
         step:
           type: string
-          enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key]
+          enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key]
         org: { type: string, description: "The organisation deleted, transferred, or made an owner of (`delete_org`, `hand_over`, `make_owner`)." }
         to: { type: string, description: "Who it is for: for `hand_over`, the person's id or @handle; for `make_owner`, a person's id, or what the invitation names - an @handle, an e-mail address, or `github:` and a login." }
-        account: { type: string, description: "The account a key with full access, or one that makes keys, is made in (`full_access_key`, `key_making_key`): the one the call acts in when left out." }
+        account: { type: string, description: "The account a key with full access, or one that makes keys or gives secrets, is made in (`full_access_key`, `key_making_key`, `secrets_key`): the one the call acts in when left out." }
     ConfirmCodeSent:
       type: object
       required: [object, step, expires_at, sent_to]
       properties:
         object: { const: confirm_code }
-        step: { type: string, enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key] }
+        step: { type: string, enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key] }
         org: { type: string }
         to: { type: string, description: "As the ask said it: a person in the organisation by their id, or an @handle, e-mail address or `github:` login." }
         account: { type: string }
@@ -5487,6 +5662,19 @@ components:
           type: array
           items: { type: string, enum: [full_manager, owner, admin] }
 
+    Currency:
+      type: string
+      enum: [USD, GBP, EUR]
+      description: |
+        The currency an account is counted in: its credit, its history, its limits and every price it is shown. Pounds
+        sterling for an account made in the United Kingdom, euros for one made in the euro area, US dollars for every
+        other.
+    CreditCurrencySet:
+      type: object
+      additionalProperties: false
+      required: [currency]
+      properties:
+        currency: { $ref: "#/components/schemas/Currency" }
     LimitHit:
       type: object
       required: [scope, measure, limit, used, resets_at, raised_by]
@@ -5503,10 +5691,15 @@ components:
             `person`, a person's own limits in an organisation.
         measure:
           type: string
-          enum: [month_usd, machines, vcpus, gpus, folders_bytes, file_bytes, folder_entries]
+          enum: [month_usd, month, machines, vcpus, gpus, folders_bytes, file_bytes, folder_entries]
           description: |
-            Dollars this month, machines held, CPUs running at once, or GPU machines (0 when none are allowed); for
-            folders, the bytes the account keeps in them, one file's bytes, or the files and folders they hold.
+            What was spent this month - `month_usd` in an account counted in dollars, `month` in one counted in pounds
+            or euros, its amounts in `currency` - machines held, CPUs running at once, or GPU machines (0 when none are
+            allowed); for folders, the bytes the account keeps in them, one file's bytes, or the files and folders they
+            hold.
+        currency:
+          $ref: "#/components/schemas/Currency"
+          description: "The currency of a limit for the month's amounts: the account's. Left out of a count."
         limit: { type: [number, "null"] }
         used: { type: [number, "null"], description: "Spent this month, machines held, or CPUs running." }
         resets_at:
@@ -5585,21 +5778,31 @@ components:
 
     Standing:
       type: object
-      required: [can_spend]
+      required: [can_spend, currency]
       description: In an organisation, the person's own limit for the month there joins the organisation's.
       properties:
         can_spend: { type: boolean, description: "Whether the account can spend now; in an organisation, the person's own limit counts too." }
+        currency: { $ref: "#/components/schemas/Currency" }
+        balance:
+          type: [number, "null"]
+          description: |
+            What is left to spend this month under the limits, not the credit (`credit`), in the account's currency; null
+            with no monthly limit. In an organisation, a member is told what is left of their own limit there, or null
+            when they have none.
         balance_usd:
           type: [number, "null"]
-          description: |
-            What is left to spend this month under the limits, not the credit (`credit_usd`); null with no monthly limit. In an
-            organisation, a member is told what is left of their own limit there, or null when they have none.
-        credit_usd:
+          deprecated: true
+          description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `balance`."
+        credit:
           type: [number, "null"]
           description: |
-            The account's credit left, in dollars; at zero or below the account cannot spend. Null wherever
+            The account's credit left, in its currency; at zero or below the account cannot spend. Null wherever
             `GET /v1/credit` would not answer: for an organisation's member - its credit is read by its owners, admins and
             billing - and for a key limited to some projects.
+        credit_usd:
+          type: [number, "null"]
+          deprecated: true
+          description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `credit`."
         reason: { type: string, description: "Why it cannot spend, in words a person reads." }
 
     Role:
@@ -5682,7 +5885,8 @@ components:
             - $ref: "#/components/schemas/PersonLimits"
             - type: "null"
         machines: { type: [integer, "null"], description: "The machines they hold in it; null as limits is." }
-        spent_usd: { type: [number, "null"], description: "What they ran this month: the machines they hold, and their shares of those they held before; null as limits is." }
+        spent: { type: [number, "null"], description: "What they ran this month, in the organisation's currency: the machines they hold, and their shares of those they held before; null as limits is." }
+        spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
         joined_at: { type: string, format: date-time }
     MemberTeam:
       type: object
@@ -5713,14 +5917,33 @@ components:
         handle: { type: string, description: "Their @handle, without its @: lower-case letters, digits and -, theirs alone. May be empty." }
     PersonLimits:
       type: object
-      required: [max_machines, max_vcpus, gpus, month_cap_usd]
-      description: |
-        A person's own limits in an organisation, on top of its own: null is no limit. Give all four.
+      required: [max_machines, max_vcpus, gpus, currency, month_cap, month_cap_usd]
+      description: "A person's own limits in an organisation, beside its own: null is no limit of their own."
       properties:
         max_machines: { type: [integer, "null"], minimum: 0, description: "The machines they may hold." }
         max_vcpus: { type: [integer, "null"], minimum: 0, description: "The CPUs their machines may run at once." }
         gpus: { type: boolean, description: "Whether they may make GPU machines." }
-        month_cap_usd: { type: [number, "null"], minimum: 0, description: "What their machines may come to in a month, in dollars, to the cent." }
+        currency: { $ref: "#/components/schemas/Currency" }
+        month_cap: { type: [number, "null"], minimum: 0, description: "What their machines may come to in a month, in the organisation's currency, to the cent." }
+        month_cap_usd: { type: [number, "null"], minimum: 0, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_cap`." }
+    PersonLimitsSet:
+      type: object
+      additionalProperties: false
+      required: [max_machines, max_vcpus, gpus]
+      description: |
+        A person's own limits in an organisation, on top of its own: null is no limit. Give all four: `month_cap`, in the
+        organisation's currency, or `month_cap_usd` in an organisation counted in dollars.
+      properties:
+        max_machines: { type: [integer, "null"], minimum: 0, description: "The machines they may hold." }
+        max_vcpus: { type: [integer, "null"], minimum: 0, description: "The CPUs their machines may run at once." }
+        gpus: { type: boolean, description: "Whether they may make GPU machines." }
+        month_cap: { type: [number, "null"], minimum: 0, maximum: 10000000, description: "What their machines may come to in a month, in the organisation's currency, to the cent." }
+        month_cap_usd:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 10000000
+          deprecated: true
+          description: "Deprecated: `month_cap` in dollars, taken in an organisation counted in dollars alone; read and set `month_cap`."
     MemberList:
       type: object
       required: [object, data]
@@ -5740,9 +5963,9 @@ components:
         limits:
           description: |
             Their own limits there. Owners change anyone's; admins a member's or billing's; billing only a member's
-            `month_cap_usd`; a team manager or full manager those of a member with no level, all of whose teams they manage,
+            `month_cap`; a team manager or full manager those of a member with no level, all of whose teams they manage,
             within each team's budget and GPU rule.
-          $ref: "#/components/schemas/PersonLimits"
+          $ref: "#/components/schemas/PersonLimitsSet"
     Invite:
       type: object
       required: [id, object, email, github_login, person, role, teams, limits, made_by, created_at, sent_at, expires_at, state, accepted_by]
@@ -5792,7 +6015,7 @@ components:
         teams:
           type: array
           items: { $ref: "#/components/schemas/TeamPick" }
-        limits: { $ref: "#/components/schemas/PersonLimits" }
+        limits: { $ref: "#/components/schemas/PersonLimitsSet" }
     InviteCreated:
       allOf:
         - $ref: "#/components/schemas/Invite"
@@ -5811,17 +6034,21 @@ components:
                 The link works either way.
     SpendAlerts:
       type: object
-      required: [object, month, spent_usd, alert_usd, limit_usd, limit_percents, passed, your_emails, email_on]
+      required: [object, month, currency, spent, spent_usd, alert, alert_usd, limit, limit_usd, limit_percents, passed, your_emails, email_on]
       properties:
         object: { const: spend_alerts }
         month: { type: string, description: "This month, `YYYY-MM`, as months are counted: in UTC." }
-        spent_usd: { type: number, description: "What the account's machines came to this month so far." }
-        alert_usd:
+        currency: { $ref: "#/components/schemas/Currency" }
+        spent: { type: number, description: "What the account's machines came to this month so far, in its currency." }
+        spent_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
+        alert:
           type: [number, "null"]
-          description: The alert amount for the month; null for none.
-        limit_usd:
+          description: The alert amount for the month, in the account's currency; null for none.
+        alert_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `alert`." }
+        limit:
           type: [number, "null"]
           description: The account's limit for the month - the lower of its own and Wheelmachine's - which pauses its machines once it is reached; null for none.
+        limit_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `limit`." }
         limit_percents:
           type: array
           items: { type: integer }
@@ -5833,14 +6060,16 @@ components:
           description: What passed this month, the first first.
           items:
             type: object
-            required: [kind, usd, spent_usd, at, emails]
+            required: [kind, amount, usd, spent, spent_usd, at, emails]
             properties:
               kind:
                 type: string
                 enum: [alert, limit_50, limit_75, limit_80, limit_90, limit_100]
                 description: The alert amount, or 50%, 75%, 90% or 100% of the limit; an older entry may say 80%.
-              usd: { type: number, description: "The alert's amount, or the limit's." }
-              spent_usd: { type: number, description: What had been spent as it passed. }
+              amount: { type: number, description: "The alert's amount, or the limit's, in the account's currency." }
+              usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `amount`." }
+              spent: { type: number, description: "What had been spent as it passed, in the account's currency." }
+              spent_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
               at: { type: string, format: date-time }
               emails: { type: integer, description: How many people were e-mailed of it. }
         your_emails: { type: boolean, description: Whether you get these e-mails in this account. }
@@ -5848,30 +6077,44 @@ components:
     SpendAlertSet:
       type: object
       additionalProperties: false
-      required: [alert_usd]
+      description: "`alert`, or `alert_usd` in an account counted in dollars: one of them."
       properties:
+        alert:
+          type: [number, "null"]
+          minimum: 0.01
+          maximum: 10000000
+          description: An amount a month in the account's currency; null for no alert.
+          examples: [50]
         alert_usd:
           type: [number, "null"]
           minimum: 0.01
           maximum: 10000000
-          description: Dollars a month; null for no alert.
-          examples: [50]
+          deprecated: true
+          description: "Deprecated: `alert` in dollars, taken in an account counted in dollars alone; set `alert`."
     AccountLimitSet:
       type: object
       additionalProperties: false
-      required: [month_cap_usd]
+      description: "`month_cap`, or `month_cap_usd` in an account counted in dollars: one of them."
       properties:
+        month_cap:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 10000000
+          description: An amount a month in the account's currency; null for no limit of the account's own.
+          examples: [200]
         month_cap_usd:
           type: [number, "null"]
           minimum: 0
           maximum: 10000000
-          description: Dollars a month; null for no limit of the account's own.
-          examples: [200]
+          deprecated: true
+          description: "Deprecated: `month_cap` in dollars, taken in an account counted in dollars alone; set `month_cap`."
     UsageLimits:
       type: object
-      required: [object, month, resets_at, alert_percents, account, folders, teams, people, yours, passed]
+      required: [object, month, currency, resets_at, alert_percents, account, folders, teams, people, yours, passed]
+      description: Every amount in the account's currency (`currency`).
       properties:
         object: { const: usage_limits }
+        currency: { $ref: "#/components/schemas/Currency" }
         folders:
           description: What the account keeps in its folders, the Trash included, against what it may; null when folders are not available.
           oneOf:
@@ -5891,28 +6134,33 @@ components:
             - [50, 75, 90, 100]
         account:
           type: object
-          required: [name, kind, month_cap_usd, in_force_usd, in_force, spent_usd, percent, limited, set_by, set_at, wheelmachine, changed_by,
-            you_change]
+          required: [name, kind, currency, month_cap, month_cap_usd, in_force_amount, in_force_usd, in_force, spent, spent_usd, percent, limited,
+            set_by, set_at, wheelmachine, changed_by, you_change]
           properties:
             name: { type: string }
             kind: { type: string, enum: [person, org] }
-            month_cap_usd: { type: [number, "null"], description: "The account's own limit; null for none, or to those not shown it." }
-            in_force_usd: { type: [number, "null"], description: "The lower of its own and Wheelmachine's: the one that applies." }
+            currency: { $ref: "#/components/schemas/Currency" }
+            month_cap: { type: [number, "null"], description: "The account's own limit; null for none, or to those not shown it." }
+            month_cap_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_cap`." }
+            in_force_amount: { type: [number, "null"], description: "The lower of its own and Wheelmachine's: the one that applies." }
+            in_force_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `in_force_amount`." }
             in_force:
               type: string
               enum: [account, wheelmachine, ""]
               description: Whose limit holds; empty for none.
-            spent_usd: { type: [number, "null"] }
+            spent: { type: [number, "null"] }
+            spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
             percent: { type: [integer, "null"], description: "How much of the limit in force is used, rounded down: said to everyone it holds." }
             limited: { type: boolean, description: "Whether a limit for the month holds the account: said to everyone in it." }
             set_by: { oneOf: [{ $ref: "#/components/schemas/PersonName" }, { type: "null" }] }
             set_at: { type: [string, "null"], format: date-time }
             wheelmachine:
               type: object
-              required: [month_cap_usd, max_machines, max_vcpus]
+              required: [month_cap, month_cap_usd, max_machines, max_vcpus]
               description: Wheelmachine's own limits for the account, which its support raises.
               properties:
-                month_cap_usd: { type: [number, "null"] }
+                month_cap: { type: [number, "null"] }
+                month_cap_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_cap`." }
                 max_machines: { type: integer }
                 max_vcpus: { type: [integer, "null"] }
             changed_by:
@@ -5924,12 +6172,14 @@ components:
           type: array
           items:
             type: object
-            required: [id, name, month_budget_usd, spent_usd, percent, yours, changed_by, you_change]
+            required: [id, name, month_budget, month_budget_usd, spent, spent_usd, percent, yours, changed_by, you_change]
             properties:
               id: { type: string }
               name: { type: string }
-              month_budget_usd: { type: [number, "null"] }
-              spent_usd: { type: [number, "null"], description: "Null to those not shown what the team spends: its members." }
+              month_budget: { type: [number, "null"] }
+              month_budget_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_budget`." }
+              spent: { type: [number, "null"], description: "Null to those not shown what the team spends: its members." }
+              spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
               percent: { type: [integer, "null"] }
               yours: { type: boolean, description: "You are a member of it." }
               changed_by:
@@ -5941,12 +6191,14 @@ components:
           type: array
           items:
             type: object
-            required: [person, role, month_cap_usd, spent_usd, percent, max_machines, max_vcpus, gpus, changed_by, you_change]
+            required: [person, role, month_cap, month_cap_usd, spent, spent_usd, percent, max_machines, max_vcpus, gpus, changed_by, you_change]
             properties:
               person: { $ref: "#/components/schemas/PersonName" }
               role: { type: string }
-              month_cap_usd: { type: [number, "null"] }
-              spent_usd: { type: [number, "null"] }
+              month_cap: { type: [number, "null"] }
+              month_cap_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_cap`." }
+              spent: { type: [number, "null"] }
+              spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
               percent: { type: [integer, "null"] }
               max_machines: { type: [integer, "null"] }
               max_vcpus: { type: [integer, "null"] }
@@ -5961,12 +6213,14 @@ components:
           description: The limits for the month that apply to you, with how near each is.
           items:
             type: object
-            required: [scope, name, limit_usd, spent_usd, percent, reached]
+            required: [scope, name, limit, limit_usd, spent, spent_usd, percent, reached]
             properties:
               scope: { type: string, enum: [wheelmachine, account, team, person] }
               name: { type: string }
-              limit_usd: { type: [number, "null"], description: "Null to those not shown it." }
-              spent_usd: { type: [number, "null"] }
+              limit: { type: [number, "null"], description: "Null to those not shown it." }
+              limit_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `limit`." }
+              spent: { type: [number, "null"] }
+              spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
               percent: { type: [integer, "null"] }
               reached: { type: boolean }
         passed:
@@ -6490,8 +6744,8 @@ components:
           type: string
           enum: [open, closed, allowed]
           description: |
-            `open`: it reaches the whole internet. `closed`: no outbound connections, apart from name lookups
-            (DNS). `allowed`: only what `allow` lists.
+            `open`: it reaches the whole internet. `closed`: none of it, though name lookups (DNS), some sites we host
+            and its team's folders still work. `allowed`: only what `allow` lists.
         allow:
           type: array
           description: Where an `allowed` machine may reach; empty for `open` and `closed`.
@@ -6857,7 +7111,8 @@ components:
         url: { type: string, format: uri }
     TeamRules:
       type: object
-      required: [object, project, hand_offs, forks, gpus, open_internet, month_budget_usd, spent_usd, open_machines, models, set_by, set_at]
+      required: [object, project, hand_offs, forks, gpus, open_internet, currency, month_budget, month_budget_usd, spent, spent_usd, open_machines, models,
+        set_by, set_at]
       properties:
         object: { const: team_rules }
         project: { type: string }
@@ -6865,9 +7120,12 @@ components:
         forks: { type: string, enum: [ask, "off"], description: "Every member's fork waits for a full manager, an owner or an admin (`ask`), or none is made (`off`)." }
         gpus: { type: boolean }
         open_internet: { type: boolean }
-        month_budget_usd: { type: [number, "null"] }
-        spent_usd: { type: [number, "null"], description: "What its machines came to this month: shown to its managers at any level, owners, admins and billing; null to its members." }
-        open_machines: { type: [integer, "null"], description: "Its machines whose internet is open; null as spent_usd is." }
+        currency: { $ref: "#/components/schemas/Currency" }
+        month_budget: { type: [number, "null"], description: "What its machines may come to in a month, in the organisation's currency; null for no budget." }
+        month_budget_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `month_budget`." }
+        spent: { type: [number, "null"], description: "What its machines came to this month: shown to its managers at any level, owners, admins and billing; null to its members." }
+        spent_usd: { type: [number, "null"], deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `spent`." }
+        open_machines: { type: [integer, "null"], description: "Its machines whose internet is open; null as spent is." }
         models:
           type: string
           enum: [any, allowed]
@@ -6897,19 +7155,21 @@ components:
       type: object
       required: [idle_lowered, ports_private, links_ended]
       properties:
-        idle_lowered: { type: integer, description: "Machines whose idle stop was lowered to the rule." }
+        idle_lowered: { type: integer, description: "Machines whose idle time was lowered to the rule." }
         ports_private: { type: integer, description: "Ports no longer open to the whole internet." }
         links_ended: { type: integer, description: "Ports whose links ended, under `off`." }
     TeamRulesSet:
       type: object
       additionalProperties: false
-      required: [hand_offs, forks, gpus, open_internet, month_budget_usd]
+      required: [hand_offs, forks, gpus, open_internet]
+      description: "The first five every one said: `month_budget` - or `month_budget_usd`, in an organisation counted in dollars - with the four."
       properties:
         hand_offs: { type: string, enum: [free, ask, "off"] }
         forks: { type: string, enum: [ask, "off"], description: "`free` is refused: a member's fork always waits for a full manager, an owner or an admin." }
         gpus: { type: boolean }
         open_internet: { type: boolean }
-        month_budget_usd: { type: [number, "null"], minimum: 0 }
+        month_budget: { type: [number, "null"], minimum: 0, maximum: 1000000000, description: "In the organisation's currency; null for no budget." }
+        month_budget_usd: { type: [number, "null"], minimum: 0, deprecated: true, description: "Deprecated: `month_budget` in dollars, taken in an organisation counted in dollars alone; set `month_budget`." }
         max_machine_vcpus: { type: [integer, "null"], minimum: 1, maximum: 1024, description: "Left out: as it is." }
         idle_max_seconds: { type: [integer, "null"], minimum: 60, maximum: 86400, description: "Left out: as it is." }
         public_ports: { type: string, enum: ["on", links_only, "off"], description: "Left out: as it is." }
@@ -6923,7 +7183,8 @@ components:
         forks: { type: string, enum: [ask, "off"] }
         gpus: { type: boolean }
         open_internet: { type: boolean }
-        month_budget_usd: { type: [number, "null"], minimum: 0 }
+        month_budget: { type: [number, "null"], minimum: 0, maximum: 1000000000, description: "In the organisation's currency; null for no budget." }
+        month_budget_usd: { type: [number, "null"], minimum: 0, deprecated: true, description: "Deprecated: `month_budget` in dollars, taken in an organisation counted in dollars alone; set `month_budget`." }
         max_machine_vcpus: { type: [integer, "null"], minimum: 1, maximum: 1024 }
         idle_max_seconds: { type: [integer, "null"], minimum: 60, maximum: 86400 }
         public_ports: { type: string, enum: ["on", links_only, "off"] }
@@ -7510,6 +7771,13 @@ components:
       description: The models of your AI keys, and how each provider's list stands.
       properties:
         object: { const: list }
+        currency: { $ref: "#/components/schemas/Currency" }
+        rate:
+          type: number
+          description: |
+            What a US dollar is in the account's currency at Wheelmachine's rate - 1 in an account counted in dollars - so
+            that a provider's price is shown beside it as a guide ("$2, about £1.60"). The price itself is the provider's, in
+            dollars.
         data:
           type: array
           description: The models - limited to a list, those of the list alone.
@@ -7775,16 +8043,19 @@ components:
 
     MachineSize:
       type: object
-      required: [cpus, memory_gb, price_per_hour_usd]
+      required: [cpus, memory_gb, currency, price_per_hour, price_per_hour_usd]
       properties:
         cpus: { type: integer, enum: [2, 4, 8] }
         memory_gb: { type: integer }
-        price_per_hour_usd: { type: number, description: "What an hour of it running comes to." }
+        currency: { $ref: "#/components/schemas/Currency" }
+        price_per_hour: { type: number, description: "What an hour of it running comes to, in the account's currency." }
+        price_per_hour_usd: { type: number, description: "The same in US dollars: the price list's own." }
     SizeList:
       type: object
-      required: [object, data]
+      required: [object, currency, data]
       properties:
         object: { const: list }
+        currency: { $ref: "#/components/schemas/Currency" }
         data:
           type: array
           items: { $ref: "#/components/schemas/MachineSize" }
@@ -7799,9 +8070,10 @@ components:
 
     GpuList:
       type: object
-      required: [object, data, for_sale]
+      required: [object, currency, data, for_sale]
       properties:
         object: { const: list }
+        currency: { $ref: "#/components/schemas/Currency" }
         for_sale:
           type: boolean
           description: False while this account cannot make GPU machines; the list shows what they would cost.
@@ -7810,7 +8082,7 @@ components:
           items: { $ref: "#/components/schemas/GpuOffer" }
     GpuOffer:
       type: object
-      required: [id, model, count, memory_gb, price_per_hour_usd, available]
+      required: [id, model, count, memory_gb, currency, price_per_hour, price_per_hour_usd, available]
       properties:
         id: { type: string }
         model: { type: string, examples: ["H100 80GB"] }
@@ -7824,22 +8096,27 @@ components:
           properties:
             city: { type: string }
             country: { type: string }
-        price_per_hour_usd: { type: number }
+        currency: { $ref: "#/components/schemas/Currency" }
+        price_per_hour: { type: number, description: "What an hour of it comes to, in the account's currency." }
+        price_per_hour_usd: { type: number, description: "The same in US dollars: the price list's own." }
         interruptible: { type: boolean, description: "Can be interrupted at any time; cheaper for it." }
         available: { type: boolean }
 
     Usage:
       type: object
-      required: [object, month, machines, total_usd]
+      required: [object, month, currency, machines, total, total_usd]
+      description: Each amount in the account's currency at Wheelmachine's rate now, and in US dollars as it is counted (`*_usd`).
       properties:
         object: { const: usage }
         month: { type: string }
+        currency: { $ref: "#/components/schemas/Currency" }
+        total: { type: number }
         total_usd: { type: number }
         machines:
           type: array
           items:
             type: object
-            required: [machine, running_seconds, usd]
+            required: [machine, running_seconds, amount, usd]
             properties:
               machine: { type: string }
               name: { type: string, description: "The machine's name." }
@@ -7853,44 +8130,57 @@ components:
                   - $ref: "#/components/schemas/HeldBy"
                   - type: "null"
               running_seconds: { type: number }
+              amount: { type: number }
               usd: { type: number }
-        folders_usd:
+        folders:
           type: [number, "null"]
           description: |
             What the account's folders came to in the month, taken from its credit and under no limit: shown to you in your own
             account, and to an organisation's owners, admins and billing; null otherwise.
+        folders_usd: { type: [number, "null"], description: "The same in US dollars." }
         held_before:
           type: array
           description: In an organisation, what you ran this month of machines you no longer reach - handed off, or moved to another team.
           items:
             type: object
-            required: [machine, name, usd]
+            required: [machine, name, amount, usd]
             properties:
               machine: { type: string }
               name: { type: string }
+              amount: { type: number }
               usd: { type: number }
 
     Credit:
       type: object
-      required: [object, account, balance_usd, empty, buy, charging, low_usd, free_credit, data, next]
+      required: [object, account, currency, currency_fixed, balance, balance_usd, empty, buy, charging, low, low_usd, free_credit, data, next]
       properties:
         object: { const: credit }
         account: { type: string, description: "The account it is: your own, or the organisation's." }
-        balance_usd:
+        currency: { $ref: "#/components/schemas/Currency" }
+        currency_fixed:
+          type: boolean
+          description: "Whether the currency is fixed - by the account's first purchase, or by Wheelmachine's support - or can still be changed (`PUT /v1/credit/currency`)."
+        balance:
           type: number
           description: |
-            The credit left, in dollars to the millionth: what was put in, less what was taken. It may be a little
-            below zero: the running time of the minute it ran out in is taken too.
-        empty: { type: boolean, description: "Zero or below: the account's machines are paused, and none starts until the balance is above $0." }
+            The credit left, in the account's currency to the millionth: what was put in, less what was taken. It may be
+            a little below zero: the running time of the minute it ran out in is taken too.
+        balance_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `balance`." }
+        empty: { type: boolean, description: "Zero or below: the account's machines are paused, and none starts until the balance is above zero." }
         buy:
           type: object
-          required: [open, amounts_usd, paddle]
+          required: [open, amounts, amounts_usd, paddle]
           description: Whether credit can be bought, in which amounts, and what Paddle's checkout is opened with.
           properties:
             open: { type: boolean, description: "False when credit cannot be bought." }
+            amounts:
+              type: array
+              description: "The amounts credit is bought in, in the account's currency, one at a time (`POST /v1/credit/purchases`): 10, 25, 50 and 100. Empty while not open."
+              items: { type: integer }
             amounts_usd:
               type: array
-              description: "The amounts credit is bought in, in dollars, one at a time (`POST /v1/credit/purchases`): 10, 25, 50 and 100. Empty while not open."
+              deprecated: true
+              description: "Deprecated: the same numbers as `amounts`, as they were named while every account was in dollars."
               items: { type: integer }
             paddle:
               type: [object, "null"]
@@ -7909,11 +8199,12 @@ components:
           properties:
             state: { type: string, enum: ["on", "from", "off"] }
             from: { type: [string, "null"], format: date-time }
-        low_usd:
+        low:
           type: number
           description: |
-            Below this the credit is running low, and those who buy it are e-mailed once: the larger of $1 and a fifth of
-            the latest purchase.
+            Below this the credit is running low, and those who buy it are e-mailed once: the larger of 1 of the account's
+            currency and a fifth of the latest purchase.
+        low_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `low`." }
         free_credit:
           description: |
             The free credit your own account is still to get, and what it waits for: a GitHub account linked on the
@@ -7922,9 +8213,10 @@ components:
             organisation.
           oneOf:
             - type: object
-              required: [usd, needs, github_min_days, too_new_until]
+              required: [amount, usd, needs, github_min_days, too_new_until]
               properties:
-                usd: { type: number, examples: [5] }
+                amount: { type: number, description: "5 of the account's currency.", examples: [5] }
+                usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `amount`." }
                 needs: { const: github }
                 github_min_days: { type: integer }
                 too_new_until: { type: [string, "null"], format: date-time }
@@ -7938,19 +8230,20 @@ components:
           description: The page after this one, as `after`; null for the last.
     CreditEntry:
       type: object
-      required: [id, object, kind, amount_usd, reason, machine, machine_name, at, updated_at]
+      required: [id, object, kind, amount, amount_usd, reason, machine, machine_name, at, updated_at]
       properties:
         id: { type: string, examples: [ce_01jb2xk3n4p5q6r7s8t9v0w1x2] }
         object: { const: credit_entry }
         kind:
           type: string
           description: |
-            `welcome` the $5 of free credit your own account gets; `machine_time` a machine's running time of a day
+            `welcome` the free credit your own account gets - 5 of its currency; `machine_time` a machine's running time of a day
             (UTC); `folders` what the account's folders kept that day; `purchase` credit you bought - and a disputed
             payment that came back; `refund` credit refunded through Paddle, or disputed with your bank;
             `staff_credit` and `staff_debit` credit our staff put in or took back, with why.
           enum: [welcome, machine_time, folders, purchase, refund, staff_credit, staff_debit]
-        amount_usd: { type: number, description: "Put in above zero, taken below zero; dollars to the millionth." }
+        amount: { type: number, description: "Put in above zero, taken below zero; in the account's currency, to the millionth." }
+        amount_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `amount`." }
         reason: { type: string, description: "What it is, in words a person reads." }
         machine: { type: [string, "null"], description: "The machine whose running time it is; null for any other entry." }
         machine_name: { type: [string, "null"], description: "That machine's name, a deleted one's too." }
@@ -7961,60 +8254,59 @@ components:
           description: When it last changed. A day's running time grows each minute until the day ends; no other entry changes.
     CreditPurchaseCreate:
       type: object
-      required: [amount_usd]
+      description: "`amount`, or `amount_usd` in an account counted in dollars: one of them."
       properties:
-        amount_usd: { type: integer, enum: [10, 25, 50, 100], description: "How much credit to buy, in dollars." }
+        amount: { type: integer, enum: [10, 25, 50, 100], description: "How much credit to buy, in the account's currency." }
+        amount_usd:
+          type: integer
+          enum: [10, 25, 50, 100]
+          deprecated: true
+          description: "Deprecated: `amount`, as it was named while every account was in dollars; taken in an account counted in dollars alone."
     CreditCheckout:
       type: object
-      required: [object, provider, environment, client_token, prices, custom_data]
+      required: [object, provider, environment, client_token, currency, prices, custom_data]
       properties:
         object: { const: credit_checkout }
+        currency: { $ref: "#/components/schemas/Currency" }
         provider: { const: paddle }
         environment: { type: string, enum: [sandbox, live], description: "Which Paddle environment the checkout opens in." }
         client_token: { type: string, description: "Paddle's client-side token, which the page opens the checkout with: made to be given to browsers." }
         prices:
           type: array
-          description: The four amounts' prices at Paddle, by the dollars of credit each buys.
-          items:
-            type: object
-            required: [amount_usd, price_id]
-            properties:
-              amount_usd: { type: integer, enum: [10, 25, 50, 100] }
-              price_id: { type: string }
+          description: The four amounts' prices at Paddle, by the credit each buys in the account's currency.
+          items: { $ref: "#/components/schemas/CreditPrice" }
         custom_data:
           type: object
           description: Passed to the checkout as it is.
           additionalProperties: { type: string }
     CreditPurchase:
       type: object
-      required: [object, id, account, amount_usd, checkout, created_at]
+      required: [object, id, account, currency, amount, amount_usd, checkout, created_at]
       properties:
         object: { const: credit_purchase }
         id: { type: string, examples: [cp_01jb2xk3n4p5q6r7s8t9v0w1x2] }
         account: { type: string, description: "The account the credit is for." }
-        amount_usd: { type: number, description: "The credit it gives once it is paid, in dollars." }
+        currency: { $ref: "#/components/schemas/Currency" }
+        amount: { type: number, description: "The credit it gives once it is paid, in the account's currency." }
+        amount_usd: { type: number, deprecated: true, description: "Deprecated: the same amount in US dollars at Wheelmachine's rate; read `amount`." }
         checkout:
           type: object
-          required: [provider, environment, client_token, transaction_id, price_id, prices, custom_data, url]
+          required: [provider, environment, client_token, currency, transaction_id, price_id, prices, custom_data, url]
           description: |
-            Where this payment is paid, and what the dashboard opens Paddle's checkout with. Paddle
-            charges the price of where the person is - rupees in India, pounds in the United Kingdom, euros in the euro
-            area, US dollars elsewhere - and the credit given is the dollars of the price bought.
+            Where this payment is paid, and what the dashboard opens Paddle's checkout with. Each price is
+            in the account's currency - in India, an account counted in dollars pays in rupees - and the credit given is
+            the amount of the price bought, in the account's currency.
           properties:
             provider: { const: paddle }
+            currency: { $ref: "#/components/schemas/Currency" }
             environment: { type: string, enum: [sandbox, live], description: "Which Paddle environment the checkout opens in." }
             client_token: { type: string, description: "Paddle's client-side token, which the dashboard's page opens the checkout with: made to be given to browsers." }
             transaction_id: { type: [string, "null"], description: "Paddle's id for the purchase's transaction, or null while it has none. A purchase can have one before it is paid." }
             price_id: { type: string, description: "Paddle's price of this purchase's amount." }
             prices:
               type: array
-              description: The four amounts' prices at Paddle, by the dollars of credit each buys.
-              items:
-                type: object
-                required: [amount_usd, price_id]
-                properties:
-                  amount_usd: { type: integer, enum: [10, 25, 50, 100] }
-                  price_id: { type: string }
+              description: The four amounts' prices at Paddle, by the credit each buys in the account's currency.
+              items: { $ref: "#/components/schemas/CreditPrice" }
             custom_data:
               type: object
               description: Passed to the checkout as it is.
@@ -8025,6 +8317,18 @@ components:
               description: The dashboard's Billing page with this purchase in its address, which opens Paddle's checkout on it for a person signed in there who buys the account's credit.
               examples: ["https://app.wheelmachine.ai/billing?purchase=cp_01jb2xk3n4p5q6r7s8t9v0w1x2"]
         created_at: { type: string, format: date-time }
+    CreditPrice:
+      type: object
+      required: [amount, amount_usd, price_id]
+      description: One of the four amounts - 10, 25, 50 or 100 of the account's currency - and its price at Paddle.
+      properties:
+        amount: { type: integer, enum: [10, 25, 50, 100] }
+        amount_usd:
+          type: integer
+          enum: [10, 25, 50, 100]
+          deprecated: true
+          description: "Deprecated: the same number as `amount`, as it was named while every account was in dollars - a pack, not dollars."
+        price_id: { type: string }
     PaddleNotification:
       type: object
       required: [event_id, event_type, data]
