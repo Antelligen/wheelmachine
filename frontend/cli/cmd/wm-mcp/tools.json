@@ -1,0 +1,899 @@
+{
+  "instructions": "Wheelmachine machines on this account: make them, run commands in them, read and write their files, pause, start, stop, fork, back up and delete them. A machine is named by its id (m_...) or its name; file paths begin home/ (the machine's home) or work/ (where commands start). Running time is charged by the second while a machine runs: pause or stop machines that are not in use. A machine's commands get the account's secrets it was given as environment variables, so a command there can read them; these tools name secrets, and never take a value. Errors come back as results with isError and the API's code.",
+  "tools": [
+    {
+      "name": "list_machines",
+      "title": "List machines",
+      "description": "List the account's machines, newest first, a page at a time; narrow by project, state or labels. Answers {\"object\":\"list\",\"data\":[machine...],\"next\":...}: give next as after for the page after it; next is null on the last page.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Only this project's machines: its id (prj_...) or its name."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "starting",
+              "running",
+              "paused",
+              "stopped",
+              "archived",
+              "recovering",
+              "failed"
+            ],
+            "description": "Only machines in this state; failed lists the ones that never came up, each with its failure saying why."
+          },
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only machines carrying every one of these labels."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50,
+            "description": "Machines on the page."
+          },
+          "after": {
+            "type": "string",
+            "description": "The next of the page before."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List machines",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "create_machine",
+      "title": "Make a machine",
+      "description": "Make a machine and answer with it once it runs, usually in about a second; every argument may be left out. If that takes longer than wait_s, it is answered with state starting: follow it with get_machine. A GPU machine can take minutes: it is answered so within about a second; one that never comes up says state failed, and failure says why. It is charged by the second while it runs, and pauses by itself once it is idle - nothing has reached it for idle_after_s and its programs have been quiet as long, so work left running in the background keeps it going; with sleep_when_idle false it never pauses by itself.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "A name for people; ids are made by the API."
+          },
+          "project": {
+            "type": "string",
+            "description": "Its project: an id (prj_...) or a name; the account's first when left out."
+          },
+          "region": {
+            "type": "string",
+            "description": "A region id from list_regions to run near."
+          },
+          "gpu": {
+            "type": "string",
+            "description": "A GPU id from list_gpus; needs a key with the cloud:gpus scope."
+          },
+          "cpus": {
+            "type": "integer",
+            "enum": [
+              2,
+              4,
+              8
+            ],
+            "default": 2,
+            "description": "Its CPUs, with 2 GB of memory each; not with gpu, whose size comes with it."
+          },
+          "labels": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Labels, from name to value."
+          },
+          "sleep_when_idle": {
+            "type": "boolean",
+            "default": true,
+            "description": "False: it never pauses by itself, and runs (charged) until it is paused or stopped."
+          },
+          "idle_after_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 300,
+            "description": "How long it must be idle before it pauses by itself."
+          },
+          "secrets": {
+            "type": "array",
+            "maxItems": 200,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
+            },
+            "description": "Names of the account's secrets (list_secrets) that every command run in the machine gets as environment variables. Needs a key with the cloud:secrets:write scope, of the whole account."
+          },
+          "network": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "internet"
+            ],
+            "properties": {
+              "internet": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed",
+                  "allowed"
+                ],
+                "description": "open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed (only what allow lists)."
+              },
+              "allow": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 253
+                },
+                "description": "For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."
+              }
+            },
+            "description": "What it may reach on the internet."
+          },
+          "wait_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 600,
+            "default": 60,
+            "description": "How long to wait for it to run before answering with state starting, in seconds."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Make a machine",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_machine",
+      "title": "Get a machine",
+      "description": "One machine as it is now: its state, size, location, labels and running time.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Get a machine",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "run_command",
+      "title": "Run a command",
+      "description": "Run a command in a machine and answer with its exit_code, stdout and stderr. Give command (the program and its arguments, run without a shell) or shell (a line for sh -lc, with pipes and redirections), not both. A paused machine is woken for it. A command may run 10 minutes: start longer work in the background and read its output from a file. A non-zero exit_code is the command's own answer, not an error. Long output is cut, and truncated says so: write big output to a file and read the part you need.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 4096,
+            "description": "The program and its arguments, such as [\"python3\", \"-c\", \"print(2+2)\"]."
+          },
+          "shell": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 131072,
+            "description": "A line of shell, such as \"ls -la | wc -l\"."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Where it starts, an absolute path; the work folder when left out."
+          },
+          "env": {
+            "type": "object",
+            "maxProperties": 256,
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Environment variables for it."
+          },
+          "root": {
+            "type": "boolean",
+            "default": false,
+            "description": "Run it as root, inside the machine only."
+          },
+          "max_output_bytes": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 8388608,
+            "default": 65536,
+            "description": "The most of each of stdout and stderr given back."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Run a command",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "read_file",
+      "title": "Read a file",
+      "description": "Read a file in a machine. Text comes as it is (encoding text); any other bytes come as base64 (encoding base64). At most max_bytes are given back, and truncated says when the file holds more.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^(home|work)/",
+            "description": "A path in the machine: home/... (its home) or work/... (where commands start)."
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 8388608,
+            "default": 1048576,
+            "description": "The most bytes given back."
+          }
+        },
+        "required": [
+          "machine",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Read a file",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "write_file",
+      "title": "Write a file",
+      "description": "Write text to a file in a machine, making the folders on the way; a file already there is replaced.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^(home|work)/",
+            "description": "A path in the machine: home/... (its home) or work/... (where commands start)."
+          },
+          "content": {
+            "type": "string",
+            "description": "The file's text, whole."
+          }
+        },
+        "required": [
+          "machine",
+          "path",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Write a file",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "pause_machine",
+      "title": "Pause a machine",
+      "description": "Pause a machine with its memory kept: nothing runs and no running time is charged. start_machine brings it back where it was.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Pause a machine",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "start_machine",
+      "title": "Start a machine",
+      "description": "Run a paused, stopped or archived machine again, and answer once it runs; when that takes longer than wait_s, it is answered with state starting.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "wait_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 600,
+            "default": 60,
+            "description": "How long to wait for it to run before answering with state starting, in seconds."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Start a machine",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "stop_machine",
+      "title": "Stop a machine",
+      "description": "Stop a machine: its files stay; its memory and what was running do not. start_machine runs it again.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Stop a machine",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fork_machine",
+      "title": "Fork a machine",
+      "description": "Fork a machine: a new machine of its own, made from it as it is now - or, with backup, from one of its backups, starting afresh from its files, at the original's size or the one cpus asks. Its name is the original's with -fork after it, and its labels the original's, unless given. In an organisation, a member's fork is not made at once: it waits for the OK of a full manager of the machine's team, an owner or an admin - and first for the OK of the person who made the key in the dashboard, as this server asks with a key. The answer is then the request (\"object\":\"request\", its id rq_..., not a machine's), with a note saying what it waits for; the fork is made, named, labelled and sized as asked, once it is approved.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "A name for people; ids are made by the API."
+          },
+          "labels": {
+            "type": "object",
+            "maxProperties": 32,
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Labels, from name to value."
+          },
+          "backup": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One of the machine's backups to make the fork from: its id (list_backups), or latest for its newest. Left out, the fork is of the machine as it is now."
+          },
+          "cpus": {
+            "type": "integer",
+            "enum": [
+              2,
+              4,
+              8
+            ],
+            "description": "Only with backup: the fork's CPUs, with 2 GB of memory each; the original's when left out. A fork of the machine as it is now is always the original's size. Not for a GPU machine, whose size comes with its GPU."
+          },
+          "wait_s": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 600,
+            "default": 60,
+            "description": "How long to wait for it to run before answering with state starting, in seconds."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Fork a machine",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "backup_machine",
+      "title": "Back up a machine",
+      "description": "Keep a machine's files as they are now, not what runs in it: fork_machine with backup makes a new machine from them later, at the machine's size or another. Answers the backup, with the id to give fork_machine.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "A note to know it by."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Back up a machine",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_backups",
+      "title": "List backups",
+      "description": "Backups, newest first: a machine's, or with no machine given, those of every machine this key reaches. Give an id to fork_machine as backup. Answers {\"object\":\"list\",\"data\":[backup...]}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Only this machine's backups: its id (m_...) or its name."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 100,
+            "description": "The most backups given."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List backups",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "delete_machine",
+      "title": "Delete a machine",
+      "description": "Delete a machine, all its files and its backups, for good: this cannot be undone.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Delete a machine",
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_gpus",
+      "title": "List GPUs",
+      "description": "GPUs on offer now: id, model, memory, where, price an hour (in the account's currency, and in US dollars) and whether one is free. for_sale is false while GPU machines are not open to every account. Give an id to create_machine as gpu.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List GPUs",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_regions",
+      "title": "List regions",
+      "description": "Places you can ask a machine to run in; give an id to create_machine as region. A machine says where it actually runs in its location.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List regions",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_secrets",
+      "title": "List secrets",
+      "description": "The account's secrets by name, each with the machines given it - never a value: values are set by a person (wm secrets set, or the API), never through these tools. A machine's commands get each secret it was given as an environment variable of that name; a variable given to run_command in env wins over a secret of the same name. One kept outside the machines (outside) holds only a placeholder in a machine, and its value is sent to outside.hosts alone. An AI key - outside.preset set, such as ANTHROPIC_API_KEY or OPENAI_API_KEY - is on every machine (every_machine) unless it was set for the machines given it: a machine's ai_keys names the ones that reach it, and the agents in it use them as they are.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List secrets",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "give_secrets",
+      "title": "Give a machine secrets",
+      "description": "Say which of the account's secrets a machine gets, by their names: every command run in it gets each as an environment variable of that name. The names given take the place of the ones it had; an empty list takes them all away. Each must be set already (list_secrets). Answers with the machine.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "secrets": {
+            "type": "array",
+            "maxItems": 200,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z_][A-Z0-9_]{0,63}$"
+            },
+            "description": "Every secret it is to get, by name; [] for none. Giving needs a key with the cloud:secrets:write scope, of the whole account."
+          }
+        },
+        "required": [
+          "machine",
+          "secrets"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Give a machine secrets",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "set_network",
+      "title": "Set a machine's internet",
+      "description": "Set what a machine may reach on the internet - open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed only to the names and ranges you list. It takes effect at once, without a restart. Answers with the machine.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "network": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "internet"
+            ],
+            "properties": {
+              "internet": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "closed",
+                  "allowed"
+                ],
+                "description": "open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed (only what allow lists)."
+              },
+              "allow": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "maxLength": 253
+                },
+                "description": "For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."
+              }
+            },
+            "description": "What it may reach on the internet."
+          }
+        },
+        "required": [
+          "machine",
+          "network"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Set a machine's internet",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_apps",
+      "title": "List a machine's apps",
+      "description": "The apps a machine carries and whether each is on: web apps (a desktop, a code editor, an agent's own page) reached at the machine's private web address for their port, services reached from inside the machine (a model server at its own address there), and agents that each keep a session of their own in the machine's terminal. An agent with keys_changed true began its session before the machine's AI keys changed: turning it off and on again starts it with them, in a new session. A new machine runs them by default, but the desktop and Gemini CLI, which stay off until turned on; the code editor is always on. Answers {\"object\":\"list\",\"data\":[app...]}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "List a machine's apps",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "turn_app_on",
+      "title": "Turn an app on",
+      "description": "Turn an app on; it may take up to a minute. A web app answers a link that lets one browser into its private address once, within five minutes, landing on its page: give it to the person, and do not keep it. An app with a token of its own answers it this once, in token. Each call makes a new link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The app's name, as list_apps gives it, such as desktop."
+          },
+          "access_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 1800,
+            "description": "How long the browser that opens the link may reach the app, in seconds."
+          }
+        },
+        "required": [
+          "machine",
+          "app"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Turn an app on",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "turn_app_off",
+      "title": "Turn an app off",
+      "description": "Turn an app off, which frees the machine's memory. A web app's address is closed with it when it was opened for the app and is still private; an agent's session ends. The code editor (editor) is always on: turning it off is refused (conflict).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The app's name, as list_apps gives it, such as desktop."
+          }
+        },
+        "required": [
+          "machine",
+          "app"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Turn an app off",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "show_app",
+      "title": "Show an app on the machine's screen",
+      "description": "Open an app on the machine's own desktop - its window, signed in where it signs in - so a person who watches the machine's screen in the dashboard sees it there, with nothing to open or approve. It may take up to two minutes. Answers with the app.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The app's name, as list_apps gives it, such as desktop."
+          }
+        },
+        "required": [
+          "machine",
+          "app"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Show an app on the machine's screen",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "open_app",
+      "title": "Open a web app",
+      "description": "A fresh link into a web app that is on - its address opened private first when it is not open: it lets one browser into the app's private address once, within five minutes, landing on its page. Give it to the person, and do not keep it. Each call makes a new link.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "machine": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The machine's id (m_...) or its name."
+          },
+          "app": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$",
+            "description": "The app's name, as list_apps gives it, such as desktop."
+          },
+          "access_s": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 3600,
+            "default": 1800,
+            "description": "How long the browser that opens the link may reach the app, in seconds."
+          }
+        },
+        "required": [
+          "machine",
+          "app"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Open a web app",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "whoami",
+      "title": "Who am I",
+      "description": "The account and API key in use: the key's scopes and projects, and whether the account can spend.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Who am I",
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

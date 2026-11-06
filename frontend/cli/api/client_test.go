@@ -146,7 +146,7 @@ func TestGivesUpAfterMaxAttempts(t *testing.T) {
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n.Add(1)
-		writeProblem(w, 504, CodeTimeout, "the call took longer than it may", "")
+		writeProblem(w, 504, CodeTimeout, "that took too long; try again in a moment", "")
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, srv.URL, WithRetryPolicy(RetryPolicy{MaxAttempts: 3, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}))
@@ -229,7 +229,7 @@ func TestCommandIsNotSentAgainWhenItMayHaveRun(t *testing.T) {
 		if r.Header.Get("Idempotency-Key") != "" {
 			t.Error("a command never carries an Idempotency-Key")
 		}
-		writeProblem(w, status, CodeUnavailable, "the machines service could not run the command just now", "1")
+		writeProblem(w, status, CodeUnavailable, "we could not run the command just now", "1")
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, srv.URL)
@@ -410,7 +410,7 @@ func TestAPortIsOpenedAgainAfterAFailedTryButALinkIsNeverAskedForTwice(t *testin
 			case "503":
 				writeProblem(w, 503, CodeUnavailable, "the machine could not be reached just now", "1")
 			case "504":
-				writeProblem(w, 504, CodeTimeout, "the call took longer than it may", "")
+				writeProblem(w, 504, CodeTimeout, "that took too long; try again in a moment", "")
 			case "429":
 				writeProblem(w, 429, CodeRateLimited, "this key's limit of 600 calls a minute is reached", "1")
 			}

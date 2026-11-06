@@ -45,7 +45,8 @@ func defaultAgents() []api.Agent {
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := api.ModelList{Object: "list", Data: slices.Clone(s.Models.Data), Suppliers: slices.Clone(s.Models.Suppliers)}
+	out := api.ModelList{Object: "list", Currency: s.Models.Currency, Rate: s.Models.Rate, Data: slices.Clone(s.Models.Data),
+		Suppliers: slices.Clone(s.Models.Suppliers)}
 	if name := r.URL.Query().Get("agent"); name != "" {
 		a := s.agentLocked(name)
 		if a == nil {

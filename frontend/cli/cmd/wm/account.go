@@ -278,11 +278,12 @@ func (a *app) me(ctx context.Context, args []string) error {
 		spend = "no: " + or(me.Standing.Reason, "the balance is used up")
 	}
 	d.line("can spend", spend)
-	if me.Standing.CreditUSD != nil {
-		d.line("credit", balanceMoney(*me.Standing.CreditUSD))
+	cur := me.Standing.Currency
+	if me.Standing.Credit != nil {
+		d.line("credit", balanceMoney(*me.Standing.Credit, cur))
 	}
-	if me.Standing.BalanceUSD != nil {
-		d.line("balance", money(*me.Standing.BalanceUSD)+" left this month")
+	if me.Standing.Balance != nil {
+		d.line("balance", moneyIn(*me.Standing.Balance, cur)+" left this month")
 	} else {
 		d.line("balance", "no limit this month")
 	}
@@ -340,8 +341,8 @@ func limitsOf(l *api.PersonLimits) string {
 	if l.MaxVCPUs != nil {
 		held = append(held, "at most "+strconv.Itoa(*l.MaxVCPUs)+" CPUs at once")
 	}
-	if l.MonthCapUSD != nil {
-		held = append(held, "at most "+money(*l.MonthCapUSD)+" a month")
+	if l.MonthCap != nil {
+		held = append(held, "at most "+moneyIn(*l.MonthCap, l.Currency)+" a month")
 	}
 	words := "no limit of their own"
 	if len(held) > 0 {
@@ -392,11 +393,11 @@ func (a *app) usageCmd(ctx context.Context, args []string) error {
 	held := slices.ContainsFunc(u.Machines, func(l api.UsageLine) bool { return l.HeldBy != nil })
 	t := a.table(withColumn(held, 3, []string{"MACHINE", "NAME", "PROJECT", "RAN", "COST"}, "WHOSE")...)
 	for _, l := range u.Machines {
-		t.row(withColumn(held, 3, []string{l.Machine, l.Name, l.Project, span(l.RunningSeconds), money(l.USD)}, whoseOf(l.HeldBy))...)
+		t.row(withColumn(held, 3, []string{l.Machine, l.Name, l.Project, span(l.RunningSeconds), moneyIn(l.Amount, u.Currency)}, whoseOf(l.HeldBy))...)
 	}
-	t.row(withColumn(held, 3, []string{"total " + u.Month, "", "", "", money(u.TotalUSD)}, "")...)
-	if u.FoldersUSD != nil {
-		t.row(withColumn(held, 3, []string{"folders " + u.Month, "", "", "-", money(*u.FoldersUSD)}, "")...)
+	t.row(withColumn(held, 3, []string{"total " + u.Month, "", "", "", moneyIn(u.Total, u.Currency)}, "")...)
+	if u.Folders != nil {
+		t.row(withColumn(held, 3, []string{"folders " + u.Month, "", "", "-", moneyIn(*u.Folders, u.Currency)}, "")...)
 	}
 	return t.flush()
 }
@@ -405,11 +406,16 @@ func (a *app) creditCmd(ctx context.Context, args []string) error {
 	if len(args) > 0 && args[0] == "buy" {
 		return a.creditBuy(ctx, args[1:])
 	}
+	if len(args) > 0 && args[0] == "currency" {
+		return a.creditCurrency(ctx, args[1:])
+	}
 	fs := a.flags("credit", "wm credit [--limit <n>] [--all]",
 		"The account's credit, and its latest entries: credit put in, and machines' running time taken from it - one "+
-			"entry a machine a day. Your own account gets $5 of free credit once - signed up with Google, once you link a GitHub account - and a new organisation none; at "+
-			"zero the account's machines are paused until the balance is above $0 (wm credit buy). In an organisation the credit "+
-			"is the organisation's, read by its owners, admins and billing.")
+			"entry a machine a day - in the account's currency. Your own account gets 5 of it in free credit once ($5, "+
+			"£5 or €5) - signed up with Google, once you link a GitHub account - and a new organisation none; at zero the "+
+			"account's machines are paused until the balance is above zero (wm credit buy). In an organisation the credit "+
+			"is the organisation's, read by its owners, admins and billing. wm credit currency changes the currency "+
+			"until your first purchase, or until we change it for you.")
 	limit := fs.Int("limit", 20, "how many entries to show, the newest first (1 to 200)")
 	every := fs.Bool("all", false, "every entry, page after page")
 	words, err := parse(fs, args)
@@ -447,11 +453,17 @@ func (a *app) creditCmd(ctx context.Context, args []string) error {
 		}
 		return a.printJSON(credit)
 	case a.quiet:
-		fmt.Fprintf(a.stdout, "%.6f\n", credit.BalanceUSD)
+		fmt.Fprintf(a.stdout, "%.6f\n", credit.Balance)
 		return nil
 	}
+	cur := credit.Currency
 	d := a.detail()
-	d.line("balance", balanceMoney(credit.BalanceUSD))
+	d.line("balance", balanceMoney(credit.Balance, cur))
+	if credit.CurrencyFixed {
+		d.line("currency", currencyWords(cur))
+	} else {
+		d.line("currency", currencyWords(cur)+"; wm credit currency changes it until your first purchase, or until we change it for you")
+	}
 	switch credit.Charging.State {
 	case "off":
 		d.line("charging", "not charged: the company's own account")
@@ -463,21 +475,21 @@ func (a *app) creditCmd(ctx context.Context, args []string) error {
 		}
 	default:
 		if credit.Empty {
-			d.line("state", "used up: machines are paused, folders are read-only, and nothing starts until the balance is above $0")
+			d.line("state", "used up: machines are paused, folders are read-only, and nothing starts until the balance is above zero")
 		}
 	}
 	if fc := credit.FreeCredit; fc != nil {
-		line := balanceMoney(fc.USD) + " once you link your GitHub account on the dashboard's Code page"
+		line := balanceMoney(fc.Amount, cur) + " once you link your GitHub account on the dashboard's Code page"
 		if fc.GitHubMinDays > 0 {
 			line += " (at least " + strconv.Itoa(fc.GitHubMinDays) + " days old)"
 		}
 		if fc.TooNewUntil != nil {
-			line = balanceMoney(fc.USD) + " once your GitHub account is old enough: link it again from " + (*fc.TooNewUntil)[:10]
+			line = balanceMoney(fc.Amount, cur) + " once your GitHub account is old enough: link it again from " + (*fc.TooNewUntil)[:10]
 		}
 		d.line("free credit", line)
 	}
 	if credit.Buy.Open {
-		d.line("buy credit", "wm credit buy <"+amountsOf(credit.Buy.AmountsUSD)+">, or on the dashboard's Billing page")
+		d.line("buy credit", "wm credit buy <"+amountsOf(credit.Buy.Amounts)+">, or on the dashboard's Billing page")
 	} else {
 		d.line("buy credit", "not open just now")
 	}
@@ -498,7 +510,7 @@ func (a *app) creditCmd(ctx context.Context, args []string) error {
 				machine = *e.MachineName
 			}
 		}
-		t.row(when, e.Reason, machine, signedMoney(e.AmountUSD))
+		t.row(when, e.Reason, machine, signedMoney(e.Amount, cur))
 	}
 	if err := t.flush(); err != nil {
 		return err
@@ -513,7 +525,7 @@ func (a *app) creditCmd(ctx context.Context, args []string) error {
 // Paddle's checkout on it for a person signed in there. Nothing is charged until it is paid.
 func (a *app) creditBuy(ctx context.Context, args []string) error {
 	fs := a.flags("credit buy", "wm credit buy <10|25|50|100>",
-		"Buy credit for the account: $10, $25, $50 or $100. It prints a link to pay it in Paddle's checkout, on the "+
+		"Buy credit for the account: 10, 25, 50 or 100 of its currency (wm credit says which). It prints a link to pay it in Paddle's checkout, on the "+
 			"dashboard's Billing page - open it in a browser signed in to the dashboard, in this account. Paddle takes "+
 			"the payment, adds any sales tax or VAT, and e-mails you the receipt and tax invoice; the credit is there once "+
 			"Paddle says the payment is complete. A link is paid once, within a day: for any other payment of it we ask "+
@@ -525,15 +537,15 @@ func (a *app) creditBuy(ctx context.Context, args []string) error {
 	if err := count(words, 1, 1, "the amount: 10, 25, 50 or 100"); err != nil {
 		return err
 	}
-	usd, err := strconv.Atoi(strings.TrimPrefix(words[0], "$"))
-	if err != nil || (usd != 10 && usd != 25 && usd != 50 && usd != 100) {
+	amount, err := strconv.Atoi(strings.TrimLeft(words[0], "$£€"))
+	if err != nil || (amount != 10 && amount != 25 && amount != 50 && amount != 100) {
 		return usagef("the amount is 10, 25, 50 or 100")
 	}
 	c, err := a.client()
 	if err != nil {
 		return err
 	}
-	t, err := c.BuyCredit(ctx, usd)
+	t, err := c.BuyCredit(ctx, amount)
 	if err != nil {
 		return err
 	}
@@ -550,7 +562,7 @@ func (a *app) creditBuy(ctx context.Context, args []string) error {
 		return nil
 	}
 	d := a.detail()
-	d.line("amount", money(t.AmountUSD))
+	d.line("amount", moneyIn(t.Amount, t.Currency))
 	d.line("pay at", t.Checkout.URL)
 	if err := d.flush(); err != nil {
 		return err
@@ -560,29 +572,80 @@ func (a *app) creditBuy(ctx context.Context, args []string) error {
 	return nil
 }
 
+// creditCurrency says the currency the account's credit is counted in, or changes it - until your first purchase, or until we change it for you.
+func (a *app) creditCurrency(ctx context.Context, args []string) error {
+	fs := a.flags("credit currency", "wm credit currency [USD|GBP|EUR]",
+		"The currency the account's credit is counted in, or, given one, change it to it: US dollars, pounds sterling or "+
+			"euros. It can be changed until your first purchase, or until we change it for you; after that it stays. The credit keeps its value "+
+			"at Wheelmachine's rates, and free credit becomes 5 of the new currency; limits and alerts are turned too. In "+
+			"an organisation, its owners and billing change it.")
+	words, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if err := count(words, 0, 1, "the currency: USD, GBP or EUR"); err != nil {
+		return err
+	}
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+	var credit *api.Credit
+	if len(words) == 0 {
+		if credit, err = c.Credit(ctx, api.ListParams{Limit: 1}); err != nil {
+			return err
+		}
+	} else {
+		to := strings.ToUpper(strings.TrimSpace(words[0]))
+		if to != api.CurrencyUSD && to != api.CurrencyGBP && to != api.CurrencyEUR {
+			return usagef("the currency is USD, GBP or EUR")
+		}
+		if credit, err = c.SetCurrency(ctx, to); err != nil {
+			return err
+		}
+	}
+	credit.Data, credit.Next = nil, nil
+	switch {
+	case a.json:
+		return a.printJSON(credit)
+	case a.quiet:
+		fmt.Fprintln(a.stdout, credit.Currency)
+		return nil
+	}
+	d := a.detail()
+	d.line("currency", currencyWords(credit.Currency))
+	d.line("balance", balanceMoney(credit.Balance, credit.Currency))
+	if credit.CurrencyFixed {
+		d.line("change", "fixed")
+	} else {
+		d.line("change", "wm credit currency <USD|GBP|EUR>, until your first purchase, or until we change it for you")
+	}
+	return d.flush()
+}
+
 // amountsOf is the amounts credit is bought in, as wm credit buy takes them: 10|25|50|100.
-func amountsOf(usd []int64) string {
-	out := make([]string, 0, len(usd))
-	for _, v := range usd {
+func amountsOf(amounts []int64) string {
+	out := make([]string, 0, len(amounts))
+	for _, v := range amounts {
 		out = append(out, strconv.FormatInt(v, 10))
 	}
 	return strings.Join(out, "|")
 }
 
-// signedMoney is an amount with its sign: +$5.00 put in, -$0.0400 taken.
-func signedMoney(v float64) string {
+// signedMoney is an amount with its sign: +$5.00 put in, -£0.0400 taken.
+func signedMoney(v float64, currency string) string {
 	if v < 0 {
-		return "-" + money(-v)
+		return "-" + moneyIn(-v, currency)
 	}
-	return "+" + money(v)
+	return "+" + moneyIn(v, currency)
 }
 
 // balanceMoney is a balance, below zero said so: -$0.0400.
-func balanceMoney(v float64) string {
+func balanceMoney(v float64, currency string) string {
 	if v < 0 {
-		return "-" + money(-v)
+		return "-" + moneyIn(-v, currency)
 	}
-	return money(v)
+	return moneyIn(v, currency)
 }
 
 // errNothingDone ends a command the person said no to: nothing was done, and nothing failed.

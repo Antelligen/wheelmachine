@@ -60,11 +60,11 @@ func (c *Client) Limits(ctx context.Context) (*UsageLimits, error) {
 	return &out, nil
 }
 
-// SetMonthLimit sets the account's own limit for the month, in dollars, or takes it away with nil: in your own
-// account, with a key that holds cloud:*; in an organisation, an owner's.
-func (c *Client) SetMonthLimit(ctx context.Context, usd *float64) (*UsageLimits, error) {
+// SetMonthLimit sets the account's own limit for the month, in the account's currency, or takes it away with nil: in
+// your own account, with a key that has cloud:*; in an organisation, an owner's.
+func (c *Client) SetMonthLimit(ctx context.Context, amount *float64) (*UsageLimits, error) {
 	var out UsageLimits
-	err := c.decode(ctx, call{method: http.MethodPut, path: "/v1/usage/limits/account", in: map[string]any{"month_cap_usd": usd},
+	err := c.decode(ctx, call{method: http.MethodPut, path: "/v1/usage/limits/account", in: map[string]any{"month_cap": amount},
 		timeout: callTimeout}, &out)
 	if err != nil {
 		return nil, err

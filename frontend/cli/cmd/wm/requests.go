@@ -318,8 +318,8 @@ func (a *app) projectsRules(ctx context.Context, args []string) error {
 		return "off"
 	}
 	budget := "none"
-	if r.MonthBudgetUSD != nil {
-		budget = fmt.Sprintf("$%.2f", *r.MonthBudgetUSD)
+	if r.MonthBudget != nil {
+		budget = moneyIn(*r.MonthBudget, r.Currency)
 	}
 	largest, idle, ports := "none", "none", r.PublicPorts
 	if r.MaxMachineVCPUs != nil {
@@ -331,13 +331,13 @@ func (a *app) projectsRules(ctx context.Context, args []string) error {
 	if ports == "" {
 		ports = "on"
 	}
-	if r.SpentUSD == nil {
+	if r.Spent == nil {
 		// (a member of the team: its rules, and what its machines came to is its managers' to see)
-		t := a.table("HAND-OFFS", "FORKS", "GPUS", "OPEN INTERNET", "BUDGET", "LARGEST", "IDLE STOP", "PUBLIC PORTS", "TYPES ONLY")
+		t := a.table("HAND-OFFS", "FORKS", "GPUS", "OPEN INTERNET", "BUDGET", "LARGEST", "LONGEST IDLE", "PUBLIC PORTS", "TYPES ONLY")
 		t.row(r.HandOffs, r.Forks, onOff(r.GPUs), onOff(r.OpenInternet), budget, largest, idle, ports, onOff(r.TypesOnly))
 		return t.flush()
 	}
-	t := a.table("HAND-OFFS", "FORKS", "GPUS", "OPEN INTERNET", "BUDGET", "SPENT", "LARGEST", "IDLE STOP", "PUBLIC PORTS", "TYPES ONLY")
-	t.row(r.HandOffs, r.Forks, onOff(r.GPUs), onOff(r.OpenInternet), budget, fmt.Sprintf("$%.2f", *r.SpentUSD), largest, idle, ports, onOff(r.TypesOnly))
+	t := a.table("HAND-OFFS", "FORKS", "GPUS", "OPEN INTERNET", "BUDGET", "SPENT", "LARGEST", "LONGEST IDLE", "PUBLIC PORTS", "TYPES ONLY")
+	t.row(r.HandOffs, r.Forks, onOff(r.GPUs), onOff(r.OpenInternet), budget, moneyIn(*r.Spent, r.Currency), largest, idle, ports, onOff(r.TypesOnly))
 	return t.flush()
 }

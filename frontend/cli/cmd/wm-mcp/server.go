@@ -57,7 +57,8 @@ const instructions = "Wheelmachine machines on this account: make them, run comm
 	"pause, start, stop, fork, back up and delete them. A machine is named by its id (m_...) or its name; file paths " +
 	"begin home/ (the machine's home) or work/ (where commands start). Running time is charged by the second while a " +
 	"machine runs: pause or stop machines that are not in use. A machine's commands get the account's secrets it was given " +
-	"as environment variables; these tools name secrets, and never take or show a value. Errors come back as results with " +
+	"as environment variables, so a command there can read them; these tools name secrets, and never take a value. Errors " +
+	"come back as results with " +
 	"isError and the API's code."
 
 type implementation struct {

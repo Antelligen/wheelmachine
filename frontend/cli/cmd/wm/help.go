@@ -23,7 +23,8 @@ Account:
   logout     forget the key kept on this computer
   me         the account and key in use
   usage      each machine's running time and cost in a month
-  credit     the account's credit and its latest entries; wm credit buy buys more
+  credit     the account's credit and its latest entries; wm credit buy buys more,
+             wm credit currency says its currency and changes it until your first purchase, or until we change it for you
   limits     this month's limits, and how close the account is to each (wm limits -h)
   code       the GitHub and GitLab repositories your teams' machines may read and push to (wm code -h)
   folders    the files your teams share, and your own: list, get, put, rm, mv (wm folders -h)
@@ -138,7 +139,7 @@ const projectsHelp = `Usage: wm projects <command> [arguments] [flags]
   rename <project> <name>     give a project another name
   rm <project>...             delete empty projects
   rules <project>             a team's rules: hand-offs, forks, GPUs, open internet, its budget, its largest
-                              machine, idle stop and public ports
+                              machine, longest idle and public ports
 
 A project is named by its id (prj_...) or its name.
 `

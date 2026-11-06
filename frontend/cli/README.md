@@ -53,12 +53,12 @@ the list allows one of the key's hosts; a closed machine gets none.
 
 Choose what a machine can reach on the internet:
 
-    wm machines create --internet closed                                   # no outbound at all
+    wm machines create --internet closed                                   # no internet
     wm machines create --internet allowed --allow api.github.com --allow 140.82.112.0/20
     wm machines network box --internet allowed --allow '*.githubusercontent.com'   # changes it at once, no restart
 
-`open` (the default): the whole internet. `closed`: nothing. `allowed`: only the names (HTTP and HTTPS) and IP ranges
-(other ports) you list.
+`open` (the default): the whole internet. `closed`: none of it, though name lookups and some sites we host still work.
+`allowed`: only the names (HTTP and HTTPS) and IP ranges (other ports) you list.
 
 Every command run in a machine gets the secrets it was given as environment variables; a variable the command is
 given itself (`env`) wins over a secret of the same name. A value is never taken from the command line - where the
@@ -90,14 +90,11 @@ exit with the command's own code.
     wm credit                                            # what is left, and its latest entries
     wm credit --all                                      # every entry, the newest first
     wm credit -q                                         # the balance alone
-    wm credit buy 25                                     # buy $25: prints a link to pay it in Paddle's checkout
+    wm credit buy 25                                     # buy 25 of the account's currency: prints a link to pay it
+    wm credit currency GBP                               # count the credit in pounds, until your first purchase, or until we change it for you
 
-Your own account gets $5 of free credit once: at once if you signed up with GitHub, or when you link a GitHub account at
-least 30 days old. A new organisation gets none; machines' running time is taken
-from it once a minute. At zero the account's machines are paused, and none starts until the balance is above $0. Credit is
-bought in $10, $25, $50 or $100, from Paddle, our reseller, which adds any sales tax or VAT and e-mails you the
-receipt and tax invoice: open the link `wm credit buy` prints in a browser signed in to the dashboard, in the same
-account, and the credit is there once Paddle confirms the payment.
+Credit is bought in 10, 25, 50 or 100 of your account's currency through Paddle. See
+https://docs.wheelmachine.ai/billing.html.
 
 ## Organisations
 

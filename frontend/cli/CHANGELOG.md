@@ -2,6 +2,13 @@
 
 `wm`, the Wheelmachine command line, and `wm-mcp`, its MCP server for agents. Each release is tagged `wm-v<version>`.
 
+## 0.1.3
+
+- An account counted in pounds or euros reads its balance, its credit and its prices in that currency.
+- `wm credit currency` says the account's currency and changes it, until your first purchase or until we change it for
+  you. `wm credit buy 25` now buys 25 of that currency.
+- `closed` now says what still works, and the words across `wm` and `wm-mcp` are plainer.
+
 ## 0.1.2
 
 First release.

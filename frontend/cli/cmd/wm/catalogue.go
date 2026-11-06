@@ -9,7 +9,7 @@ import (
 )
 
 func (a *app) gpus(ctx context.Context, args []string) error {
-	fs := a.flags("gpus", "wm gpus", "GPUs on offer now, where they are and what an hour costs. Give an id to wm machines "+
+	fs := a.flags("gpus", "wm gpus", "GPUs on offer now, where they are and what an hour costs, in the account's currency. Give an id to wm machines "+
 		"create --gpu.")
 	words, err := parse(fs, args)
 	if err != nil {
@@ -44,7 +44,8 @@ func (a *app) gpus(ctx context.Context, args []string) error {
 		if g.Count > 1 {
 			gpu = strconv.Itoa(g.Count) + " x " + gpu
 		}
-		t.row(g.ID, gpu, strconv.Itoa(g.MemoryGB)+" GB", money(g.PricePerHourUSD)+"/h", place(g.Location), yesNo(g.Available), yesNo(g.Interruptible))
+		t.row(g.ID, gpu, strconv.Itoa(g.MemoryGB)+" GB", moneyIn(g.PricePerHour, or(g.Currency, list.Currency))+"/h", place(g.Location), yesNo(g.Available),
+			yesNo(g.Interruptible))
 	}
 	if err := t.flush(); err != nil {
 		return err

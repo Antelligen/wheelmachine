@@ -11,7 +11,7 @@ import (
 const limitsHelp = `Usage: wm limits [command]
 
   (none)                       this month's limits, and how close the account is to each
-  set month <dollars|none>     set the account's own limit for the month, or take it away
+  set month <amount|none>      set the account's own limit for the month, in its currency, or take it away
 
 A limit pauses machines once it is reached, with everything in them kept, until the next month or a higher limit.
 The account's own limit is set in your own account by you, and in an organisation by its owners (with a key) and
@@ -49,11 +49,12 @@ func (a *app) limitsCmd(ctx context.Context, args []string) error {
 		return a.printJSON(l)
 	}
 	if a.quiet {
-		if l.Account.InForceUSD != nil {
-			fmt.Fprintln(a.stdout, strconv.FormatFloat(*l.Account.InForceUSD, 'f', 2, 64))
+		if l.Account.InForceAmount != nil {
+			fmt.Fprintln(a.stdout, strconv.FormatFloat(*l.Account.InForceAmount, 'f', 2, 64))
 		}
 		return nil
 	}
+	cur := l.Currency
 	t := a.table("LIMIT", "OF", "THIS MONTH", "USED")
 	acct := l.Account
 	whose := "your account"
@@ -64,22 +65,22 @@ func (a *app) limitsCmd(ctx context.Context, args []string) error {
 	case !acct.Limited:
 		t.row("monthly", whose, "no limit", "")
 	default:
-		t.row("monthly", whose+inForceWords(acct.InForce), spentOf(acct.SpentUSD, acct.InForceUSD), percentWords(acct.Percent))
+		t.row("monthly", whose+inForceWords(acct.InForce), spentOf(acct.Spent, acct.InForceAmount, cur), percentWords(acct.Percent))
 	}
 	for _, tm := range l.Teams {
-		if tm.MonthBudgetUSD == nil {
+		if tm.MonthBudget == nil {
 			t.row("team budget", tm.Name, "none: the organisation's holds", "")
 			continue
 		}
-		t.row("team budget", tm.Name, spentOf(tm.SpentUSD, tm.MonthBudgetUSD), percentWords(tm.Percent))
+		t.row("team budget", tm.Name, spentOf(tm.Spent, tm.MonthBudget, cur), percentWords(tm.Percent))
 	}
 	for _, p := range l.People {
 		name := p.Person.Name
-		if p.MonthCapUSD == nil {
+		if p.MonthCap == nil {
 			t.row("person", name, "none of their own", "")
 			continue
 		}
-		t.row("person", name, spentOf(p.SpentUSD, p.MonthCapUSD), percentWords(p.Percent))
+		t.row("person", name, spentOf(p.Spent, p.MonthCap, cur), percentWords(p.Percent))
 	}
 	if err := t.flush(); err != nil {
 		return err
@@ -96,15 +97,16 @@ func inForceWords(whose string) string {
 	return ""
 }
 
-// What was spent of a limit, as a cell says it: "$12.40 of $40", or the limit alone to one not shown what was spent.
-func spentOf(spent, limit *float64) string {
+// What was spent of a limit, as a cell says it: "$12.40 of $40.00", or the limit alone to one not shown what was spent -
+// in the account's currency.
+func spentOf(spent, limit *float64, currency string) string {
 	switch {
 	case limit == nil:
 		return "a limit holds it"
 	case spent == nil:
-		return money(*limit)
+		return moneyIn(*limit, currency)
 	}
-	return money(*spent) + " of " + money(*limit)
+	return moneyIn(*spent, currency) + " of " + moneyIn(*limit, currency)
 }
 
 func percentWords(p *int) string {
@@ -114,33 +116,34 @@ func percentWords(p *int) string {
 	return strconv.Itoa(*p) + "%"
 }
 
-// wm limits set month <dollars|none>: the account's own limit for the month.
+// wm limits set month <amount|none>: the account's own limit for the month, in the account's currency.
 func (a *app) limitsSet(ctx context.Context, args []string) error {
-	fs := a.flags("limits set", "wm limits set month <dollars|none>", "Set the account's own limit for the month, or take it away with none.")
+	fs := a.flags("limits set", "wm limits set month <amount|none>", "Set the account's own limit for the month, in the "+
+		"account's currency, or take it away with none.")
 	words, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
-	if err := count(words, 2, 2, "month and the dollars, or none"); err != nil {
+	if err := count(words, 2, 2, "month and the amount, or none"); err != nil {
 		return err
 	}
 	if words[0] != "month" {
-		return usagef("wm limits set month <dollars|none>: the account's own limit for the month is the one set here")
+		return usagef("wm limits set month <amount|none>: the account's own limit for the month is the one set here")
 	}
-	var usd *float64
-	if v := strings.TrimPrefix(strings.TrimSpace(words[1]), "$"); v != "none" {
+	var amount *float64
+	if v := strings.TrimLeft(strings.TrimSpace(words[1]), "$£€"); v != "none" {
 		n, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", ""), 64)
 		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || n > 10_000_000 {
-			return usagef("a month's limit is dollars from 0 to 10000000, such as 200, or none")
+			return usagef("a month's limit is an amount from 0 to 10000000, such as 200, or none")
 		}
 		n = math.Round(n*100) / 100
-		usd = &n
+		amount = &n
 	}
 	c, err := a.client()
 	if err != nil {
 		return err
 	}
-	l, err := c.SetMonthLimit(ctx, usd)
+	l, err := c.SetMonthLimit(ctx, amount)
 	if err != nil {
 		return err
 	}
@@ -149,13 +152,13 @@ func (a *app) limitsSet(ctx context.Context, args []string) error {
 		return a.printJSON(l)
 	case a.quiet:
 		return nil
-	case usd == nil:
+	case amount == nil:
 		fmt.Fprintln(a.stdout, "The account has no limit for the month of its own now.")
 	default:
-		fmt.Fprintf(a.stdout, "The account's own limit is %s a month now.\n", money(*usd))
+		fmt.Fprintf(a.stdout, "The account's own limit is %s a month now.\n", moneyIn(*amount, l.Currency))
 	}
-	if w := l.Account.Wheelmachine.MonthCapUSD; w != nil && l.Account.InForce == "wheelmachine" {
-		fmt.Fprintf(a.stdout, "Wheelmachine's own limit of %s a month still applies.\n", money(*w))
+	if w := l.Account.Wheelmachine.MonthCap; w != nil && l.Account.InForce == "wheelmachine" {
+		fmt.Fprintf(a.stdout, "Wheelmachine's own limit of %s a month still applies.\n", moneyIn(*w, l.Currency))
 	}
 	return nil
 }

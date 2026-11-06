@@ -123,10 +123,14 @@ type Person struct {
 // PersonLimits is a person's own limits in an organisation, beside the organisation's own: a nil number is no limit of
 // their own.
 type PersonLimits struct {
-	MaxMachines *int     `json:"max_machines"`  // the machines they may hold
-	MaxVCPUs    *int     `json:"max_vcpus"`     // the CPUs their machines may run at once
-	GPUs        bool     `json:"gpus"`          // whether they may make GPU machines
-	MonthCapUSD *float64 `json:"month_cap_usd"` // what their machines may come to in a month, in dollars
+	MaxMachines *int   `json:"max_machines"` // the machines they may hold
+	MaxVCPUs    *int   `json:"max_vcpus"`    // the CPUs their machines may run at once
+	GPUs        bool   `json:"gpus"`         // whether they may make GPU machines
+	Currency    string `json:"currency"`     // the organisation's, which MonthCap is in
+	// what their machines may come to in a month, in the organisation's currency
+	MonthCap *float64 `json:"month_cap"`
+	// Deprecated: MonthCap in US dollars at Wheelmachine's rate.
+	MonthCapUSD *float64 `json:"month_cap_usd"`
 }
 
 // Org is an organisation as one of its people sees it: their role in it, and whether they are its primary owner, the
@@ -167,9 +171,15 @@ type AuditPerson struct {
 // Standing is whether the account can spend: its credit - nothing runs once it has run out - and what is left this
 // month under its limit, when it has one.
 type Standing struct {
-	CanSpend   bool     `json:"can_spend"`
-	BalanceUSD *float64 `json:"balance_usd"` // left this month under the account's limit; nil for an account with no monthly limit
-	CreditUSD  *float64 `json:"credit_usd"`  // the credit left; nil for an organisation's member, who does not read it
+	CanSpend bool   `json:"can_spend"`
+	Currency string `json:"currency"` // the account's, which Balance and Credit are in
+	// left this month under the account's limit; nil for an account with no monthly limit
+	Balance *float64 `json:"balance"`
+	// the credit left; nil for an organisation's member, who does not read it
+	Credit *float64 `json:"credit"`
+	// Deprecated: Balance and Credit in US dollars at Wheelmachine's rate.
+	BalanceUSD *float64 `json:"balance_usd"`
+	CreditUSD  *float64 `json:"credit_usd"`
 	Reason     string   `json:"reason,omitempty"`
 }
 
@@ -216,8 +226,8 @@ type KeyCreate struct {
 	ConfirmCode string
 }
 
-// What a confirm code is for: a risky step - close_account, delete_org, hand_over, make_owner, full_access_key or
-// key_making_key - and what of it the code is bound to. An error that needs one says it (Error.Confirm), and SendConfirmCode is asked it.
+// What a confirm code is for: a risky step - close_account, delete_org, hand_over, make_owner, full_access_key,
+// key_making_key or secrets_key - and what of it the code is bound to. An error that needs one says it (Error.Confirm), and SendConfirmCode is asked it.
 type ConfirmAsk struct {
 	Step    string `json:"step"`
 	Org     string `json:"org,omitempty"`
@@ -407,8 +417,9 @@ type MachineUpdate struct {
 }
 
 // Network is what a machine may reach on the internet: Internet is "open" (the whole internet),
-// "closed" (no outbound at all), or "allowed", where Allow lists the names (exact or a leading *.) for HTTP and
-// HTTPS and the IPv4/IPv6 ranges (CIDRs) for other ports it may reach. Allow is empty for open and closed.
+// "closed" (no internet, though name lookups and some sites we host still work), or "allowed", where Allow
+// lists the names (exact or a leading *.) for HTTP and HTTPS and the IPv4/IPv6 ranges (CIDRs) for other ports it may
+// reach. Allow is empty for open and closed.
 type Network struct {
 	Internet string   `json:"internet"`
 	Allow    []string `json:"allow"`
@@ -695,7 +706,11 @@ type ModelSupplier struct {
 
 // ModelList is the models of the account's AI keys, and their providers.
 type ModelList struct {
-	Object    string          `json:"object"`
+	Object string `json:"object"`
+	// the account's currency, and what a US dollar is in it at Wheelmachine's rate: a provider's dollar price is shown beside
+	// it as a guide, never charged in it (0 from an API that says none)
+	Currency  string          `json:"currency,omitempty"`
+	Rate      float64         `json:"rate,omitempty"`
 	Data      []Model         `json:"data"`
 	Suppliers []ModelSupplier `json:"suppliers"`
 	// Allowed is the list of the models the caller may use that applies to their choices - its models alone are listed -
@@ -793,9 +808,10 @@ type Region struct {
 
 // GpuList is the GPUs on offer now. ForSale is false while GPU machines are not open to every account yet.
 type GpuList struct {
-	Object  string     `json:"object"`
-	ForSale bool       `json:"for_sale"`
-	Data    []GpuOffer `json:"data"`
+	Object   string     `json:"object"`
+	Currency string     `json:"currency"` // the account's, which each offer's PricePerHour is in
+	ForSale  bool       `json:"for_sale"`
+	Data     []GpuOffer `json:"data"`
 }
 
 type GpuOffer struct {
@@ -807,18 +823,22 @@ type GpuOffer struct {
 	RAMGB           float64   `json:"ram_gb,omitempty"`
 	DiskGB          float64   `json:"disk_gb,omitempty"`
 	Location        *Location `json:"location,omitempty"`
-	PricePerHourUSD float64   `json:"price_per_hour_usd"`
-	Interruptible   bool      `json:"interruptible"` // can be interrupted at any time; cheaper for it
+	Currency        string    `json:"currency"`
+	PricePerHour    float64   `json:"price_per_hour"`     // an hour of it, in the account's currency
+	PricePerHourUSD float64   `json:"price_per_hour_usd"` // an hour of it, in US dollars: the price list's own
+	Interruptible   bool      `json:"interruptible"`      // can be interrupted at any time; cheaper for it
 	Available       bool      `json:"available"`
 }
 
 // LimitHit is the limit that stopped a call: Wheelmachine's for the account ("wheelmachine"), the account's own
-// ("account"), a team's budget ("team") or a person's own ("person"); of what - dollars this month, machines held,
-// CPUs at once, GPU machines - at what and how much is used (nil when the caller is not shown them), when a limit for
-// the month lifts, and who can raise it.
+// ("account"), a team's budget ("team") or a person's own ("person"); of what - what was spent this month ("month_usd"
+// in an account counted in dollars, "month" in one counted in pounds or euros, in Currency), machines held, CPUs at
+// once, GPU machines - at what and how much is used (nil when the caller is not shown them), when a limit for the month
+// lifts, and who can raise it.
 type LimitHit struct {
 	Scope    string     `json:"scope"`
 	Measure  string     `json:"measure"`
+	Currency string     `json:"currency,omitempty"`
 	Limit    *float64   `json:"limit"`
 	Used     *float64   `json:"used"`
 	ResetsAt *time.Time `json:"resets_at"`
@@ -829,6 +849,7 @@ type LimitHit struct {
 type UsageLimits struct {
 	Object        string        `json:"object"`
 	Month         string        `json:"month"`
+	Currency      string        `json:"currency"` // the account's: every amount is in it
 	ResetsAt      time.Time     `json:"resets_at"`
 	AlertPercents []int         `json:"alert_percents"`
 	Account       AccountLimit  `json:"account"`
@@ -838,20 +859,26 @@ type UsageLimits struct {
 	Passed        []LimitPassed `json:"passed"`
 }
 
-// AccountLimit is the account's own limit for the month and Wheelmachine's under it: the lower holds (InForceUSD).
-// Amounts are nil to those not shown them; Limited says to anyone whether a limit holds the account.
+// AccountLimit is the account's own limit for the month and Wheelmachine's under it: the lower holds (InForceAmount),
+// in the account's currency. Amounts are nil to those not shown them; Limited says to anyone whether a limit holds
+// the account. Each `*USD` field is the same amount in US dollars at Wheelmachine's rate, deprecated.
 type AccountLimit struct {
-	Name         string      `json:"name"`
-	Kind         string      `json:"kind"`
-	MonthCapUSD  *float64    `json:"month_cap_usd"`
-	InForceUSD   *float64    `json:"in_force_usd"`
-	InForce      string      `json:"in_force"`
-	SpentUSD     *float64    `json:"spent_usd"`
-	Percent      *int        `json:"percent"`
-	Limited      bool        `json:"limited"`
-	SetBy        *PersonName `json:"set_by"`
-	SetAt        *time.Time  `json:"set_at"`
-	Wheelmachine struct {
+	Name          string      `json:"name"`
+	Kind          string      `json:"kind"`
+	Currency      string      `json:"currency"`
+	MonthCap      *float64    `json:"month_cap"`
+	MonthCapUSD   *float64    `json:"month_cap_usd"`
+	InForceAmount *float64    `json:"in_force_amount"`
+	InForceUSD    *float64    `json:"in_force_usd"`
+	InForce       string      `json:"in_force"`
+	Spent         *float64    `json:"spent"`
+	SpentUSD      *float64    `json:"spent_usd"`
+	Percent       *int        `json:"percent"`
+	Limited       bool        `json:"limited"`
+	SetBy         *PersonName `json:"set_by"`
+	SetAt         *time.Time  `json:"set_at"`
+	Wheelmachine  struct {
+		MonthCap    *float64 `json:"month_cap"`
 		MonthCapUSD *float64 `json:"month_cap_usd"`
 		MaxMachines int      `json:"max_machines"`
 		MaxVCPUs    *int     `json:"max_vcpus"`
@@ -864,8 +891,10 @@ type AccountLimit struct {
 type TeamLimit struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
-	MonthBudgetUSD *float64 `json:"month_budget_usd"`
-	SpentUSD       *float64 `json:"spent_usd"`
+	MonthBudget    *float64 `json:"month_budget"`
+	MonthBudgetUSD *float64 `json:"month_budget_usd"` // Deprecated: MonthBudget in US dollars at Wheelmachine's rate.
+	Spent          *float64 `json:"spent"`
+	SpentUSD       *float64 `json:"spent_usd"` // Deprecated: Spent in US dollars at Wheelmachine's rate.
 	Percent        *int     `json:"percent"`
 	Yours          bool     `json:"yours"`
 	ChangedBy      []string `json:"changed_by"`
@@ -876,8 +905,10 @@ type TeamLimit struct {
 type PersonLimit struct {
 	Person      PersonName `json:"person"`
 	Role        string     `json:"role"`
-	MonthCapUSD *float64   `json:"month_cap_usd"`
-	SpentUSD    *float64   `json:"spent_usd"`
+	MonthCap    *float64   `json:"month_cap"`
+	MonthCapUSD *float64   `json:"month_cap_usd"` // Deprecated: MonthCap in US dollars at Wheelmachine's rate.
+	Spent       *float64   `json:"spent"`
+	SpentUSD    *float64   `json:"spent_usd"` // Deprecated: Spent in US dollars at Wheelmachine's rate.
 	Percent     *int       `json:"percent"`
 	MaxMachines *int       `json:"max_machines"`
 	MaxVCPUs    *int       `json:"max_vcpus"`
@@ -890,8 +921,10 @@ type PersonLimit struct {
 type LimitNear struct {
 	Scope    string   `json:"scope"`
 	Name     string   `json:"name"`
-	LimitUSD *float64 `json:"limit_usd"`
-	SpentUSD *float64 `json:"spent_usd"`
+	Limit    *float64 `json:"limit"`
+	LimitUSD *float64 `json:"limit_usd"` // Deprecated: Limit in US dollars at Wheelmachine's rate.
+	Spent    *float64 `json:"spent"`
+	SpentUSD *float64 `json:"spent_usd"` // Deprecated: Spent in US dollars at Wheelmachine's rate.
 	Percent  *int     `json:"percent"`
 	Reached  bool     `json:"reached"`
 }
@@ -904,13 +937,17 @@ type LimitPassed struct {
 	At      time.Time `json:"at"`
 }
 
-// Usage is each machine's running time and cost in a month.
+// Usage is each machine's running time and cost in a month: in the account's currency at Wheelmachine's rate now, and
+// in US dollars as it is counted (the `*USD` fields).
 type Usage struct {
 	Object   string      `json:"object"`
 	Month    string      `json:"month"`
+	Currency string      `json:"currency"`
+	Total    float64     `json:"total"`
 	TotalUSD float64     `json:"total_usd"`
 	Machines []UsageLine `json:"machines"`
 	// what the account's folders came to in the month: to those who watch its money, nil to anyone else
+	Folders    *float64 `json:"folders,omitempty"`
 	FoldersUSD *float64 `json:"folders_usd,omitempty"`
 }
 
@@ -923,5 +960,6 @@ type UsageLine struct {
 	// HeldBy is, in an organisation, whose machine it is; nil in a person's own account.
 	HeldBy         *HeldBy `json:"held_by"`
 	RunningSeconds float64 `json:"running_seconds"`
+	Amount         float64 `json:"amount"`
 	USD            float64 `json:"usd"`
 }

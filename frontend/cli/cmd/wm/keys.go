@@ -95,7 +95,8 @@ func expiry(v string, now time.Time) (time.Time, error) {
 func (a *app) keysCreate(ctx context.Context, args []string) error {
 	fs := a.flags("keys create", "wm keys create <name> --scope <scope>... [flags]", "Make a key. It can hold only scopes "+
 		"and projects the key in use holds. Its secret is shown this once: store it then. A key with full access (all), "+
-		"or that makes keys (keys:write), needs a code we e-mail you: asked for here at a terminal, or given with --code."+
+		"or that makes keys (keys:write) or gives secrets (secrets:write), needs a code we e-mail you: asked for here at a "+
+		"terminal, or given with --code."+
 		"\n\nScopes: machines:read, "+
 		"machines:write, machines:exec, gpus, projects:write, keys:write, secrets:write, folders:read, folders:write, or all.")
 	var scopes, projects listFlag
@@ -103,8 +104,8 @@ func (a *app) keysCreate(ctx context.Context, args []string) error {
 	fs.Var(&projects, "project", "a `project` it is limited to; repeat for more (every project when left out)")
 	expires := fs.String("expires", "", "the `time` it stops working: in a while (30d, 12h) or on a date (2026-12-31)")
 	rate := fs.Int("rate", 0, "calls a minute it may make (the key in use's own when left out)")
-	code := fs.String("code", "", "the `code` we e-mailed you for a key with full access (all) or that makes keys (keys:write), "+
-		"when not asked for it in a terminal")
+	code := fs.String("code", "", "the `code` we e-mailed you for a key with full access (all), or that makes keys (keys:write) or gives secrets "+
+		"(secrets:write), when not asked for it in a terminal")
 	words, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -151,7 +152,7 @@ func (a *app) keysCreate(ctx context.Context, args []string) error {
 	made, err := c.CreateKey(ctx, k)
 	var refused *api.Error
 	if errors.As(err, &refused) && refused.Code == api.CodeConfirmRequired && refused.Confirm != nil && k.ConfirmCode == "" {
-		// a key with full access, or that makes keys: the code we e-mail its person, asked for at a terminal - and asked
+		// a key with full access, that makes keys or that gives secrets: the code we e-mail its person, asked for at a terminal - and asked
 		// again while it is typed wrong and has tries left
 		ask := *refused.Confirm
 		if err = a.sendCode(ctx, c, ask); err != nil {

@@ -89,7 +89,7 @@ const (
 	pSecrets = `"secrets":{"type":"array","maxItems":200,"uniqueItems":true,"items":{"type":"string","pattern":"^[A-Z_][A-Z0-9_]{0,63}$"},"description":"Names of the account's secrets (list_secrets) that every command run in the machine gets as environment variables. Needs a key with the cloud:secrets:write scope, of the whole account."}`
 	pApp     = `"app":{"type":"string","pattern":"^[a-z0-9-]{1,32}$","description":"The app's name, as list_apps gives it, such as desktop."}`
 	pAccess  = `"access_s":{"type":"integer","minimum":60,"maximum":3600,"default":1800,"description":"How long the browser that opens the link may reach the app, in seconds."}`
-	pNetwork = `"network":{"type":"object","additionalProperties":false,"required":["internet"],"properties":{"internet":{"type":"string","enum":["open","closed","allowed"],"description":"open (the whole internet), closed (no outbound at all), or allowed (only what allow lists)."},"allow":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":253},"description":"For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."}},"description":"What it may reach on the internet."}`
+	pNetwork = `"network":{"type":"object","additionalProperties":false,"required":["internet"],"properties":{"internet":{"type":"string","enum":["open","closed","allowed"],"description":"open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed (only what allow lists)."},"allow":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":253},"description":"For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."}},"description":"What it may reach on the internet."}`
 )
 
 func tools() []tool {
@@ -129,8 +129,8 @@ func tools() []tool {
 			"Run a command in a machine and answer with its exit_code, stdout and stderr. Give command (the program and its "+
 				"arguments, run without a shell) or shell (a line for sh -lc, with pipes and redirections), not both. A paused "+
 				"machine is woken for it. A command may run 10 minutes: start longer work in the background and read its "+
-				"output from a file. A non-zero exit_code is the command's own answer, not an error. Long output keeps its "+
-				"start and end, and truncated says so.",
+				"output from a file. A non-zero exit_code is the command's own answer, not an error. Long output is cut, and "+
+				"truncated says so: write big output to a file and read the part you need.",
 			object([]string{"machine"}, pMachine,
 				`"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4096,"description":"The program and its arguments, such as [\"python3\", \"-c\", \"print(2+2)\"]."}`,
 				`"shell":{"type":"string","minLength":1,"maxLength":131072,"description":"A line of shell, such as \"ls -la | wc -l\"."}`,
@@ -189,7 +189,7 @@ func tools() []tool {
 			"Delete a machine, all its files and its backups, for good: this cannot be undone.",
 			object([]string{"machine"}, pMachine), destroys, deleteMachine),
 		define("list_gpus", "List GPUs",
-			"GPUs on offer now: id, model, memory, where, price an hour and whether one is free. for_sale is false while GPU "+
+			"GPUs on offer now: id, model, memory, where, price an hour (in the account's currency, and in US dollars) and whether one is free. for_sale is false while GPU "+
 				"machines are not open to every account. Give an id to create_machine as gpu.",
 			object(nil), reads, listGPUs),
 		define("list_regions", "List regions",
@@ -213,8 +213,9 @@ func tools() []tool {
 				`"secrets":{"type":"array","maxItems":200,"uniqueItems":true,"items":{"type":"string","pattern":"^[A-Z_][A-Z0-9_]{0,63}$"},"description":"Every secret it is to get, by name; [] for none. Giving needs a key with the cloud:secrets:write scope, of the whole account."}`),
 			changes, giveSecrets),
 		define("set_network", "Set a machine's internet",
-			"Set what a machine may reach on the internet - open (the whole internet), closed (no outbound at "+
-				"all), or allowed only to the names and ranges you list. It takes effect at once, without a restart. "+
+			"Set what a machine may reach on the internet - open (the whole internet), closed (no internet, though "+
+				"name lookups and some sites we host still work), or allowed only to the names and ranges you "+
+				"list. It takes effect at once, without a restart. "+
 				"Answers with the machine.",
 			object([]string{"machine", "network"}, pMachine, pNetwork),
 			changes, setNetwork),

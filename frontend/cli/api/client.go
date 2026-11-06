@@ -34,7 +34,7 @@ import (
 // Version is wm's, wm-mcp's and this module's version, sent in the User-Agent and shown by `wm --version`: the one
 // place it is kept. A release build stamps the same into the programs (-ldflags -X, release.py), from a tag that must
 // say it too.
-var Version = "0.1.2"
+var Version = "0.1.3"
 
 const (
 	// DefaultBaseURL is where the API is reached when WHEELMACHINE_BASE_URL says nothing else.
@@ -516,6 +516,10 @@ func (c *Client) decode(ctx context.Context, cl call, out any) error {
 	}
 	if err := json.NewDecoder(res.Body).Decode(out); err != nil {
 		return fmt.Errorf("the API's answer could not be read (request %s): %w", res.Header.Get("X-Request-Id"), err)
+	}
+	// an answer of an API from before accounts had currencies says its amounts in dollars alone (currency.go)
+	if b, ok := out.(interface{ fromBefore() }); ok {
+		b.fromBefore()
 	}
 	return nil
 }

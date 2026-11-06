@@ -273,6 +273,7 @@ func New(t testing.TB) *Server {
 		"GET /v1/usage":                    s.usage,
 		"GET /v1/credit":                   s.credit,
 		"POST /v1/credit/purchases":        s.buyCredit,
+		"PUT /v1/credit/currency":          s.setCurrency,
 		"GET /v1/usage/limits":             s.limits,
 		"PUT /v1/usage/limits/account":     s.setAccountLimit,
 		"GET /v1/regions":                  s.regions,
@@ -710,9 +711,14 @@ func (s *Server) me(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	k, org := s.keys[0], s.Org
 	s.mu.Unlock()
+	standing := map[string]any{"can_spend": true, "balance_usd": 10.5, "credit_usd": s.Credit.BalanceUSD}
+	if cur := s.Credit.Currency; cur != "" {
+		// as the API since accounts had currencies: the amounts in the account's, with dollars beside them
+		standing["currency"], standing["balance"], standing["credit"] = cur, 10.5, s.Credit.Balance
+	}
 	out := map[string]any{"object": "me", "account": map[string]string{"id": s.Account, "kind": "person", "name": "Test Person"},
 		"person": api.Person{ID: s.Account, Name: "Test Person"}, "role": api.RoleOwner, "teams": nil, "limits": nil, "scopes": k.Scopes,
-		"key": k, "standing": map[string]any{"can_spend": true, "balance_usd": 10.5, "credit_usd": s.Credit.BalanceUSD}}
+		"key": k, "standing": standing}
 	if org != nil {
 		out["account"] = map[string]string{"id": org.ID, "kind": "org", "name": org.Name}
 		out["person"], out["role"], out["teams"], out["limits"] = org.Person, org.Role, org.Teams, org.Limits
@@ -757,11 +763,13 @@ func (s *Server) usage(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, u)
 }
 
-// buyCredit starts a checkout to buy credit, as the API does: one of the amounts the credit says, while buying is open
-// (Credit.Buy); refused as not open otherwise.
+// buyCredit starts a checkout to buy credit, as the API does: one of the amounts the credit says, in the account's
+// currency - `amount`, or `amount_usd` in an account counted in dollars - while buying is open (Credit.Buy); refused as
+// not open otherwise.
 func (s *Server) buyCredit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		AmountUSD int64 `json:"amount_usd"`
+		Amount    *int64 `json:"amount"`
+		AmountUSD *int64 `json:"amount_usd"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "the body is not JSON"})
@@ -769,30 +777,76 @@ func (s *Server) buyCredit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	add := s.Credit.Buy
-	account := s.Account
+	account, cur := s.Account, or(s.Credit.Currency, api.CurrencyUSD)
 	s.mu.Unlock()
 	if !add.Open || add.Paddle == nil {
 		refuse(w, r, Refusal{Status: 501, Code: "not_open", Detail: "buying credit is not open yet"})
 		return
 	}
-	if !slices.Contains(add.AmountsUSD, body.AmountUSD) {
-		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "amount_usd is 10, 25, 50 or 100"})
+	amounts := add.Amounts
+	if amounts == nil {
+		amounts = add.AmountsUSD
+	}
+	asked := body.Amount
+	if asked == nil && body.AmountUSD != nil {
+		if cur != api.CurrencyUSD {
+			refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "this account is counted in another currency: send amount"})
+			return
+		}
+		asked = body.AmountUSD
+	}
+	if asked == nil || !slices.Contains(amounts, *asked) {
+		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "amount is 10, 25, 50 or 100"})
 		return
 	}
 	var t api.CreditPurchase
-	t.Object, t.ID, t.Account, t.AmountUSD, t.CreatedAt = "credit_purchase", "cp_01jb2xk3n4p5q6r7s8t9v0w1x2", account, float64(body.AmountUSD), time.Now().UTC()
-	t.Checkout.Provider, t.Checkout.Environment, t.Checkout.ClientToken = "paddle", add.Paddle.Environment, add.Paddle.ClientToken
+	t.Object, t.ID, t.Account, t.Currency, t.Amount, t.CreatedAt = "credit_purchase", "cp_01jb2xk3n4p5q6r7s8t9v0w1x2", account, cur, float64(*asked),
+		time.Now().UTC()
+	t.AmountUSD = t.Amount
+	t.Checkout.Provider, t.Checkout.Environment, t.Checkout.ClientToken, t.Checkout.Currency = "paddle", add.Paddle.Environment, add.Paddle.ClientToken, cur
 	// as the API: no payment until Paddle's checkout makes one, and the price of each amount for it to move between
-	for _, usd := range add.AmountsUSD {
-		price := fmt.Sprintf("pri_01jb2xq4c6d8e1f3g5h7j9k%03d", usd)
-		t.Checkout.Prices = append(t.Checkout.Prices, api.CreditPrice{AmountUSD: float64(usd), PriceID: price})
-		if usd == body.AmountUSD {
+	for _, n := range amounts {
+		price := fmt.Sprintf("pri_01jb2xq4c6d8e1f3g5h7j9k%03d", n)
+		t.Checkout.Prices = append(t.Checkout.Prices, api.CreditPrice{Amount: float64(n), AmountUSD: float64(n), PriceID: price})
+		if n == *asked {
 			t.Checkout.PriceID = price
 		}
 	}
 	t.Checkout.CustomData = map[string]string{"wheelmachine_account": account, "wheelmachine_purchase": t.ID}
 	t.Checkout.URL = "https://app.wheelmachine.ai/billing?purchase=" + t.ID
 	reply(w, 201, t)
+}
+
+// setCurrency changes the currency the credit is counted in, as the API does until the account's first purchase
+// (Credit.CurrencyFixed: refused once it is fixed). The stand-in keeps the amounts as they are.
+func (s *Server) setCurrency(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Currency string `json:"currency"`
+	}
+	if !decode(w, r, &body, false) {
+		return
+	}
+	if body.Currency != api.CurrencyUSD && body.Currency != api.CurrencyGBP && body.Currency != api.CurrencyEUR {
+		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "say currency: USD, GBP or EUR"})
+		return
+	}
+	s.mu.Lock()
+	if s.Credit.CurrencyFixed {
+		s.mu.Unlock()
+		refuse(w, r, Refusal{Status: 409, Code: "conflict", Detail: "this account's currency is fixed: Wheelmachine's support can change it if it was set wrongly"})
+		return
+	}
+	if s.Credit.Currency == "" {
+		s.Credit.Balance = s.Credit.BalanceUSD
+	}
+	s.Credit.Currency = body.Currency
+	out := s.Credit
+	s.mu.Unlock()
+	out.Object, out.Data, out.Next = "credit", []api.CreditEntry{}, nil
+	if out.Account == "" {
+		out.Account = s.Account
+	}
+	reply(w, 200, out)
 }
 
 // credit answers the credit a page at a time, as the API does: `after` is the place in its entries the page before
@@ -859,13 +913,17 @@ func (s *Server) limitsNow() api.UsageLimits {
 	return l
 }
 
+// setAccountLimit sets the account's own limit for the month, as the API does: `month_cap`, in the account's currency -
+// or `month_cap_usd`, in an account counted in dollars alone.
 func (s *Server) setAccountLimit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
+		MonthCap    *float64 `json:"month_cap"`
 		MonthCapUSD *float64 `json:"month_cap_usd"`
 	}
 	raw, _ := io.ReadAll(r.Body)
-	if !bytes.Contains(raw, []byte(`"month_cap_usd"`)) {
-		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "say month_cap_usd: dollars a month, or null for no limit of the account's own"})
+	local, old := bytes.Contains(raw, []byte(`"month_cap"`)), bytes.Contains(raw, []byte(`"month_cap_usd"`))
+	if !local && !old {
+		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "say month_cap: an amount a month, or null for no limit of the account's own"})
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
@@ -874,10 +932,20 @@ func (s *Server) setAccountLimit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Limits.Account.MonthCapUSD = body.MonthCapUSD
-	s.Limits.Account.InForceUSD, s.Limits.Account.Limited = body.MonthCapUSD, body.MonthCapUSD != nil
+	cur := or(s.Limits.Currency, api.CurrencyUSD)
+	amount := body.MonthCap
+	if !local {
+		if cur != api.CurrencyUSD {
+			refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "this account is counted in another currency: set month_cap"})
+			return
+		}
+		amount = body.MonthCapUSD
+	}
+	s.Limits.Currency, s.Limits.Account.Currency = cur, cur
+	s.Limits.Account.MonthCap, s.Limits.Account.MonthCapUSD = amount, amount
+	s.Limits.Account.InForceAmount, s.Limits.Account.InForceUSD, s.Limits.Account.Limited = amount, amount, amount != nil
 	s.Limits.Account.InForce = ""
-	if body.MonthCapUSD != nil {
+	if amount != nil {
 		s.Limits.Account.InForce = "account"
 	}
 	reply(w, 200, s.limitsNow())
@@ -1022,6 +1090,8 @@ func (s *Server) createKey(w http.ResponseWriter, r *http.Request) {
 		step = "full_access_key"
 	case slices.Contains(in.Scopes, "cloud:keys:write"):
 		step = "key_making_key"
+	case slices.Contains(in.Scopes, "cloud:secrets:write"):
+		step = "secrets_key"
 	}
 	if s.ConfirmCode != "" && step != "" {
 		ask := &api.ConfirmAsk{Step: step, Account: s.Account}
@@ -1071,7 +1141,7 @@ func (s *Server) sendConfirmCode(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in, false) {
 		return
 	}
-	if in.Step != "full_access_key" && in.Step != "key_making_key" {
+	if in.Step != "full_access_key" && in.Step != "key_making_key" && in.Step != "secrets_key" {
 		refuse(w, r, Refusal{Status: 403, Code: "forbidden", Detail: "this is done signed in to the dashboard, never with a key"})
 		return
 	}

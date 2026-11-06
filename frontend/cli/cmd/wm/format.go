@@ -208,11 +208,37 @@ func span(seconds float64) string {
 }
 
 // money is dollars, to the cent, or to a hundredth of a cent under a dollar.
-func money(v float64) string {
+func money(v float64) string { return moneyIn(v, api.CurrencyUSD) }
+
+// moneyIn is an amount of a currency as money says dollars: "£4.10", "€0.0270", "$12.00" - US dollars for an answer
+// that names no currency.
+func moneyIn(v float64, currency string) string {
 	if v != 0 && math.Abs(v) < 1 {
-		return fmt.Sprintf("$%.4f", v)
+		return fmt.Sprintf("%s%.4f", symbolOf(currency), v)
 	}
-	return fmt.Sprintf("$%.2f", v)
+	return fmt.Sprintf("%s%.2f", symbolOf(currency), v)
+}
+
+// symbolOf is a currency's sign: "$", "£" or "€".
+func symbolOf(currency string) string {
+	switch currency {
+	case api.CurrencyGBP:
+		return "£"
+	case api.CurrencyEUR:
+		return "€"
+	}
+	return "$"
+}
+
+// currencyWords is a currency as a sentence names it.
+func currencyWords(currency string) string {
+	switch currency {
+	case api.CurrencyGBP:
+		return "pounds sterling (GBP)"
+	case api.CurrencyEUR:
+		return "euros (EUR)"
+	}
+	return "US dollars (USD)"
 }
 
 // withColumn puts a column - MADE BY, WHOSE - at `at` among a table's cells, when `shown`. Who made each thing, and

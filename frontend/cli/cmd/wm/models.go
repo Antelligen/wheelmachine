@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -77,7 +78,7 @@ func (a *app) modelsList(ctx context.Context, args []string) error {
 		return nil
 	}
 	t := a.table("MODEL", "NAME", "PRICE", "SCORE")
-	var priced bool
+	var priced, guided bool
 	var scored *api.ModelIntelligence
 	for _, m := range list.Data {
 		name := m.Name
@@ -87,6 +88,12 @@ func (a *app) modelsList(ctx context.Context, args []string) error {
 		price, score := "-", "-"
 		if p := m.Price; p != nil {
 			price, priced = dollars(p.InputPerMillionUSD)+" / "+dollars(p.OutputPerMillionUSD), true
+			// in an account counted in pounds or euros, about what that is in its currency at Wheelmachine's rate, beside the
+			// provider's own dollars - a guide: the provider charges it in dollars
+			if list.Currency != "" && list.Currency != api.CurrencyUSD && list.Rate > 0 {
+				price += " (about " + about(p.InputPerMillionUSD*list.Rate, list.Currency) + " / " + about(p.OutputPerMillionUSD*list.Rate, list.Currency) + ")"
+				guided = true
+			}
 		}
 		if s := m.Intelligence; s != nil {
 			score, scored = strconv.FormatFloat(s.Score, 'f', -1, 64), s
@@ -108,6 +115,9 @@ func (a *app) modelsList(ctx context.Context, args []string) error {
 	if priced {
 		fmt.Fprintln(a.stderr, "Price: a million tokens in / out, each provider's own list price. Wheelmachine charges nothing for it.")
 	}
+	if guided {
+		fmt.Fprintf(a.stderr, "The provider charges it in US dollars; about: what that is in %s at Wheelmachine's rate.\n", currencyWords(list.Currency))
+	}
 	if scored != nil {
 		fmt.Fprintf(a.stderr, "Score: %s, %s (%s), %s\n", scored.Source, scored.AsOf, scored.License, scored.URL)
 	}
@@ -116,6 +126,13 @@ func (a *app) modelsList(ctx context.Context, args []string) error {
 
 // An amount of dollars as wm says it: $2, $0.3, $1.32.
 func dollars(v float64) string { return "$" + strconv.FormatFloat(v, 'f', -1, 64) }
+
+// An amount of another currency, about: to the cent, its zeros taken off - £1.60, €0.27, £8.
+func about(v float64, currency string) string {
+	s := strconv.FormatFloat(math.Round(v*100)/100, 'f', 2, 64)
+	s = strings.TrimSuffix(s, ".00")
+	return symbolOf(currency) + s
+}
 
 // The words for how an agent stands, as wm says them.
 var agentStates = map[string]string{"chosen": "as chosen", "default": "its default", "own": "its own model", "no_key": "no key it can use",

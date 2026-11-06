@@ -972,7 +972,7 @@ func TestCreditBuy(t *testing.T) {
 		!strings.Contains(r.stderr, "open the link in a browser signed in to the dashboard") {
 		t.Fatalf("buy:\n%s\n%s", r.stdout, r.stderr)
 	}
-	if req, _ := h.api.Last(http.MethodPost, "/v1/credit/purchases"); string(req.Body) != `{"amount_usd":25}` || req.Header.Get("Idempotency-Key") == "" {
+	if req, _ := h.api.Last(http.MethodPost, "/v1/credit/purchases"); string(req.Body) != `{"amount":25}` || req.Header.Get("Idempotency-Key") == "" {
 		t.Fatalf("asked %s %v", req.Body, req.Header)
 	}
 	// what the buyer agrees to is said before they pay, as by the dashboard's buttons - and only on stderr, so a
@@ -1992,14 +1992,14 @@ func TestLimits(t *testing.T) {
 		t.Fatalf("set:\n%s", r.stdout)
 	}
 	req, _ := h.api.Last(http.MethodPut, "/v1/usage/limits/account")
-	if string(bytes.TrimSpace(req.Body)) != `{"month_cap_usd":250}` {
+	if string(bytes.TrimSpace(req.Body)) != `{"month_cap":250}` {
 		t.Fatalf("body %s", req.Body)
 	}
 	if r := h.wm("", "limits", "set", "month", "none").must(t, 0); !strings.Contains(r.stdout, "no limit for the month of its own") {
 		t.Fatalf("none:\n%s", r.stdout)
 	}
 	req, _ = h.api.Last(http.MethodPut, "/v1/usage/limits/account")
-	if string(bytes.TrimSpace(req.Body)) != `{"month_cap_usd":null}` {
+	if string(bytes.TrimSpace(req.Body)) != `{"month_cap":null}` {
 		t.Fatalf("body %s", req.Body)
 	}
 	for _, args := range [][]string{{"limits", "set", "month", "lots"}, {"limits", "set", "month", "-5"}, {"limits", "set", "week", "5"},

@@ -166,9 +166,12 @@ type TeamRules struct {
 	Forks          string      `json:"forks"` // ask or off, never free
 	GPUs           bool        `json:"gpus"`
 	OpenInternet   bool        `json:"open_internet"`
+	Currency       string      `json:"currency"`     // the organisation's, which MonthBudget and Spent are in
+	MonthBudget    *float64    `json:"month_budget"` // nil for no budget
 	MonthBudgetUSD *float64    `json:"month_budget_usd"`
-	SpentUSD       *float64    `json:"spent_usd"`     // nil to the team's members: its managers, owners, admins and billing see it
-	OpenMachines   *int        `json:"open_machines"` // nil as SpentUSD is
+	Spent          *float64    `json:"spent"`         // nil to the team's members: its managers, owners, admins and billing see it
+	SpentUSD       *float64    `json:"spent_usd"`     // Deprecated, as MonthBudgetUSD: in US dollars at Wheelmachine's rate
+	OpenMachines   *int        `json:"open_machines"` // nil as Spent is
 	Models         string      `json:"models"`
 	SetBy          *PersonName `json:"set_by"`
 	SetAt          *time.Time  `json:"set_at"`
