@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ConflictError, NotFoundError, UnavailableError } from "../dist/index.js";
+import { BadRequestError, ConflictError, NotFoundError, UnavailableError, pictureBytes } from "../dist/index.js";
 import { APP_TOKEN, setup } from "./fake-api.mjs";
 
 async function rig(t) {
@@ -140,4 +140,67 @@ test("an app is shown on the machine's screen, once it is on", async (t) => {
   assert.equal(sent.body.length, 0);
   assert.deepEqual([shown.name, shown.on, shown.link, shown.token], ["openclaw", true, undefined, undefined]);
   await assert.rejects(client.apps.show(machine.id, "Not An App"), TypeError);
+});
+
+test("a picture of a machine's desktop is asked for as it is said, and read back", async (t) => {
+  const { api, client, machine } = await rig(t);
+  const picture = await client.machines.screenshot(machine.id, { scale: 0.25, format: "jpeg", region: { x: 1, y: 2, w: 30, h: 40 } });
+  const seen = api.seen.at(-1);
+  assert.equal(seen.path, `/v1/machines/${machine.id}/screen/picture`);
+  assert.deepEqual(Object.fromEntries(seen.query), { scale: "0.25", format: "jpeg", x: "1", y: "2", w: "30", h: "40" });
+  assert.deepEqual([picture.width, picture.height, picture.scale, picture.format], [720, 450, 0.25, "jpeg"]);
+  assert.equal(Buffer.from(pictureBytes(picture)).toString(), "the picture's file");
+  assert.equal((await client.machines.screenshot(machine.id)).width, 1440);
+  assert.deepEqual(Object.fromEntries(api.seen.at(-1).query), {});
+});
+
+test("each way to work a desktop says what it should", async (t) => {
+  const { api, client, machine } = await rig(t);
+  const done = await client.machines.useScreen(machine.id, {
+    actions: [{ type: "click", x: 10, y: 20 }, { type: "wait", ms: 5 }],
+    scale: 1,
+    picture: true,
+    settle_ms: 100,
+  });
+  assert.equal(done.done, 2);
+  assert.deepEqual([done.picture.width, done.picture.height], [2880, 1800]);
+  assert.deepEqual(api.screenActions.at(-1), {
+    actions: [{ type: "click", x: 10, y: 20 }, { type: "wait", ms: 5 }],
+    scale: 1,
+    picture: true,
+    settle_ms: 100,
+  });
+  assert.equal((await client.machines.click(machine.id, { x: 1, y: 2, button: "right", count: 2, scale: 0.5 })).done, 1);
+  assert.deepEqual(api.screenActions.at(-1), { actions: [{ type: "click", x: 1, y: 2, button: "right", count: 2 }], scale: 0.5 });
+  assert.equal((await client.machines.type(machine.id, "héllo")).picture, undefined);
+  assert.deepEqual(api.screenActions.at(-1), { actions: [{ type: "type", text: "héllo" }] });
+  await client.machines.keys(machine.id, ["ctrl", "s"]);
+  assert.deepEqual(api.screenActions.at(-1), { actions: [{ type: "keys", keys: ["ctrl", "s"] }] });
+  await client.machines.scroll(machine.id, { x: 5, y: 6, dy: -3 });
+  assert.deepEqual(api.screenActions.at(-1), { actions: [{ type: "scroll", x: 5, y: 6, dy: -3 }] });
+  await assert.rejects(client.machines.useScreen(machine.id, { actions: "wait" }), TypeError);
+  await assert.rejects(client.machines.useScreen(machine.id, { actions: [] }), BadRequestError);
+});
+
+test("actions are never sent again once they may have reached the API", async (t) => {
+  const { api, client, machine, sleeps } = await rig(t);
+  // a click or a word must not happen twice: not even for a refusal that says to try again
+  let sent = 0;
+  for (const [status, code] of [[429, "rate_limited"], [503, "unavailable"], [504, "timeout"]]) {
+    api.fault("POST", "/screen/actions$", { status, code, retryAfter: 1 });
+    await assert.rejects(client.machines.type(machine.id, "pay"));
+    sent += 1;
+    assert.equal(api.requests("POST", "/screen/actions$").length, sent);
+    assert.deepEqual(sleeps, []);
+  }
+  // a picture is only asked for, and is
+  api.fault("GET", "/screen/picture$", { status: 429, code: "rate_limited", retryAfter: 1 });
+  assert.equal((await client.machines.screenshot(machine.id)).width, 1440);
+  assert.deepEqual(sleeps, [1000]);
+});
+
+test("a machine can be made with its desktop", async (t) => {
+  const { api, client } = await setup(t);
+  await client.machines.create({ desktop: true });
+  assert.deepEqual(api.seen.at(-1).json(), { desktop: true });
 });

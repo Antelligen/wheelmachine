@@ -22,8 +22,9 @@ export {
 export type { ErrorFields } from "./errors.js";
 export type { FileData } from "./files.js";
 export { PageIterator } from "./pagination.js";
-export { Machines } from "./resources/machines.js";
+export { Machines, pictureBytes } from "./resources/machines.js";
 export { Ports } from "./resources/ports.js";
+export { Deployments } from "./resources/deployments.js";
 export { Apps } from "./resources/apps.js";
 export { Projects } from "./resources/projects.js";
 export { ConfirmCodes, Keys } from "./resources/keys.js";

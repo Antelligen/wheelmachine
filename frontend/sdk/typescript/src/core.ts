@@ -44,6 +44,9 @@ export interface Call {
   /** Never sent again once it may have reached the API, not even when refused for a moment: each call makes
    * something new that is shown once. Only a call that could not go out at all is tried again. */
   once?: boolean;
+  /** A command run in a machine, which may have run whatever its answer, unless the answer says it never reached its
+   * machine (`not_run`): a 503 is tried again only then. */
+  command?: boolean;
   /** Milliseconds this call is given when its options give none. */
   timeout?: number;
   accept?: string;
@@ -238,6 +241,11 @@ export class Core {
     this.#hooks = settings.hooks;
   }
 
+  /** A pause between looks at something under way. */
+  pause(ms: number, signal?: AbortSignal): Promise<void> {
+    return this.#hooks.sleep(ms, signal);
+  }
+
   /** The time a call the API may hold for `seconds` is given (ms): that, a margin, and never less than usual. */
   held(seconds: number): number {
     return Math.max(this.timeout, (seconds + 15) * 1000);
@@ -368,6 +376,8 @@ export class Core {
     } else if (status === 503) {
       // not open yet: trying again soon changes nothing
       if (error.code === "not_open") return null;
+      // a command may have run: sent again only when the answer says it never reached its machine
+      if (call.command && error.body?.not_run !== true) return null;
     } else {
       return null;
     }

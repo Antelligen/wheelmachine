@@ -102,7 +102,8 @@ its team, an owner or an admin: `machines.fork` answers it with the request, and
   504), and `APIConnectionError` / `APITimeoutError` when no answer came. An argument it cannot use is a TypeError.
 - **Retries.** A call refused for a moment (429, 503) is tried again after the API's `Retry-After`, or a backoff with
   full jitter; so is a call that lost its connection - but `exec`, `start`, `pause` and the other actions are not
-  sent again once they went out, since they may have run. A call that creates something carries an
+  sent again once they went out, since they may have run. A command refused with 503 is sent again only when the
+  answer says it never reached its machine (`not_run`). A call that creates something carries an
   `Idempotency-Key`, the same on every retry, so a retry never makes two. A 503 `not_open` is something that is not
   open yet: it is not tried again.
 - **Long calls.** Calls the API holds by design are given the time they need. Node's fetch waits at most 300 seconds
@@ -176,6 +177,40 @@ await client.apps.turnOff(machine.id, "desktop");
 
 An app with a token of its own answers it once, in `token`, in the answer to `turnOn`. `turnOn` and `link` are never
 sent again once they may have reached the API; `turnOff` is.
+
+## Its desktop
+
+A program or an agent can see a machine's Linux desktop as a picture, and work it. The desktop is off until something asks for it,
+and its first start can take up to a minute: `desktop: true` as you make the machine has it ready. `x` and `y` are pixels of a
+picture of the whole screen at the same `scale` (0.5 by default: 1440 x 900 of the desktop's 2880 x 1800).
+
+```ts
+import { pictureBytes } from "wheelmachine";
+
+const machine = await client.machines.create({ desktop: true });
+const picture = await client.machines.screenshot(machine.id);
+console.log(picture.width, picture.height); // 1440 900
+const file = pictureBytes(picture);
+await client.machines.click(machine.id, { x: 720, y: 450 });
+await client.machines.type(machine.id, "hello"); // never kept or logged
+await client.machines.keys(machine.id, ["ctrl", "s"]);
+await client.machines.scroll(machine.id, { x: 720, y: 450, dy: 3 });
+const done = await client.machines.useScreen(machine.id, {
+  actions: [{ type: "click", x: 10, y: 10 }, { type: "wait", ms: 200 }],
+  picture: true,
+});
+```
+
+A picture shows whatever is on the screen, and goes wherever your program sends it: an agent passes it on to whichever model
+provider it uses. Someone who only watches a machine gets pictures, and a `PermissionDeniedError` for actions.
+
+Characters that aren't on an English keyboard, such as accents, Russian, Chinese or emoji, can come out wrong. Take a picture after
+typing them to check; a password box can't be checked this way.
+
+`useScreen` and the calls made of it are never sent again by this library once they may have reached the API, not even when
+refused for a moment, since a click or a word must not happen twice. A `RateLimitError` or an `UnavailableError` says nothing was
+done, so that call is yours to send again. An error after anything reached the desktop never says to try again: its message says how many
+actions were done in full, and the one after them may have been begun, so look at the screen first.
 
 ## Terminals
 

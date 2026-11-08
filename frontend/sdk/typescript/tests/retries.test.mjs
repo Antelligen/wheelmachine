@@ -73,18 +73,40 @@ test("a command whose answer was lost is not sent again", async (t) => {
   assert.deepEqual(sleeps, []);
 });
 
-test("a command refused with 504 is not sent again; with 503 it is", async (t) => {
+test("a command refused with 504, 503 or 502 is not sent again, unless it never reached its machine", async (t) => {
   const { api, client, sleeps } = await setup(t);
   const m = await client.machines.create();
   api.fault("POST", "/exec$", { status: 504, code: "timeout", times: 5 });
   await assert.rejects(client.machines.exec(m.id, ["sleep", "999"]), UnavailableError);
   assert.equal(api.requests("POST", "/exec$").length, 1);
+  // a 503 and a 502 (its result did not come back): it may have run, so it is not sent again
+  for (const status of [503, 502]) {
+    api.faults.length = 0;
+    const before = api.requests("POST", "/exec$").length;
+    api.fault("POST", "/exec$", { status, code: "unavailable", retryAfter: status === 503 ? 1 : undefined, times: 5 });
+    await assert.rejects(client.machines.exec(m.id, ["echo", "once"]), UnavailableError);
+    assert.equal(api.requests("POST", "/exec$").length, before + 1, String(status));
+    assert.deepEqual(sleeps, []);
+  }
+  // said never to have reached its machine: sent again
   api.faults.length = 0;
-  api.fault("POST", "/exec$", { status: 503, code: "unavailable", retryAfter: 1 });
+  api.fault("POST", "/exec$", { status: 503, code: "unavailable", retryAfter: 1, notRun: true });
   const r = await client.machines.exec(m.id, ["echo", "hi"]);
   assert.equal(r.stdout, "hi\n");
   assert.deepEqual(sleeps, [1000]);
   assert.equal(api.execs.length, 1);
+});
+
+test("moving a machine is tried again after a 503 as before", async (t) => {
+  // (a command's rule is its own: the actions are tried again on a 503 as they were)
+  const { api, client, sleeps } = await setup(t);
+  const m = await client.machines.create();
+  for (const [route, move] of [["start", (i) => client.machines.start(i)], ["pause", (i) => client.machines.pause(i)], ["stop", (i) => client.machines.stop(i)]]) {
+    sleeps.length = 0;
+    api.fault("POST", `/${route}$`, { status: 503, code: "unavailable", retryAfter: 1 });
+    await move(m.id);
+    assert.deepEqual(sleeps, [1000], route);
+  }
 });
 
 test("a read that lost its answer, or met a 504, is tried again", async (t) => {

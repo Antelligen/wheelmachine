@@ -5,6 +5,7 @@ import { WheelmachineError } from "./errors.js";
 import { Apps } from "./resources/apps.js";
 import { Audit } from "./resources/audit.js";
 import { Credit } from "./resources/credit.js";
+import { Deployments } from "./resources/deployments.js";
 import { ConfirmCodes, Keys } from "./resources/keys.js";
 import { Machines } from "./resources/machines.js";
 import { Orgs } from "./resources/orgs.js";
@@ -81,6 +82,8 @@ export class Wheelmachine {
   readonly maxRetries: number;
   readonly machines: Machines;
   readonly ports: Ports;
+  /** Not open yet: until Deploy opens, each call fails with the code `not_open`. */
+  readonly deployments: Deployments;
   readonly apps: Apps;
   readonly projects: Projects;
   readonly keys: Keys;
@@ -133,6 +136,7 @@ export class Wheelmachine {
     });
     this.machines = new Machines(this.#core);
     this.ports = new Ports(this.#core);
+    this.deployments = new Deployments(this.#core);
     this.apps = new Apps(this.#core);
     this.projects = new Projects(this.#core);
     this.keys = new Keys(this.#core);

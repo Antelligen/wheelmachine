@@ -156,6 +156,7 @@ export class FakeAPI {
     this.links = [];
     this.idem = new Map();
     this.execs = [];
+    this.screenActions = [];
     this.connections = 0;
     /** close every connection after its answer without saying so, as a server that times idle ones out does */
     this.closeAfterAnswer = false;
@@ -182,6 +183,14 @@ export class FakeAPI {
     this.givesWait = false;
     this.n = 0;
     this.sockets = new Set();
+    this.deployClosed = false;
+    this.deployStuck = false;
+    // how many looks at a new deployment of files find it still getting its machine ready: files sent until then are refused
+    this.deployFilesAfter = 0;
+    this.deployments = [];
+    this.deployRuns = new Map();
+    this.deploySent = new Map();
+    this.deployRepos = [];
     this.firstProject = this.addProject("Default").id;
     this.server = http.createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -298,6 +307,7 @@ export class FakeAPI {
     };
     const extra = { "content-type": "application/problem+json" };
     if (p.confirm) doc.confirm = p.confirm;
+    if (p.notRun) doc.not_run = true;
     if (p.retryAfter) {
       doc.retry_after_s = p.retryAfter;
       extra["retry-after"] = String(Math.ceil(p.retryAfter));
@@ -369,6 +379,7 @@ export class FakeAPI {
       }
       if (fault.status) {
         const p = new Problem(fault.status, fault.code ?? "conflict", fault.detail ?? "a fault set by the test", fault.retryAfter);
+        p.notRun = fault.notRun;
         this.send(req, res, rid, ...this.problem(rid, p));
         return;
       }
@@ -674,6 +685,103 @@ export class FakeAPI {
   port(value) {
     if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Problem(400, "invalid_request", "a port is a whole number from 1 to 65535");
     return value;
+  }
+
+  /** Deploy, as the API answers it: a run ends at a wait, or goes on for ever while `deployStuck`. */
+  deployRoutes(method, path, query, body, raw) {
+    if (this.deployClosed) throw new Problem(501, "not_open", "Deploy is not open yet");
+    const list = (data) => [200, { object: "list", data, next: null }, {}];
+    const asked = (name) => query.get(name) ?? undefined;
+    if (path === "/v1/deployments" && method === "GET") {
+      return list(this.deployments.filter((d) => !asked("project") || d.project === asked("project")).reverse());
+    }
+    if (path === "/v1/deployments" && method === "POST") {
+      const b = only(body, ["name", "project", "source", "branch", "build", "start", "port", "cpus", "type", "region", "secrets", "keep_awake"]);
+      const src = only(b.source, ["connection", "repo", "url", "upload"]);
+      if (Boolean(src.connection) !== Boolean(src.repo) || [src.repo, src.url, src.upload].filter(Boolean).length !== 1) {
+        throw new Problem(400, "invalid_request", "say which code");
+      }
+      if (!b.start || !b.port) throw new Problem(400, "invalid_request", "say how the app starts, and on which port");
+      const n = this.next();
+      const kind = src.upload ? "upload" : src.url ? "url" : "repo";
+      const d = {
+        object: "deployment", id: `dep_${String(n).padStart(26, "0")}`, name: b.name ?? "app", project: b.project ?? this.firstProject, held_by: null,
+        kind: "production", source: { kind, provider: null, connection: src.connection ?? null, host: null, repo: src.repo ?? null, url: src.url ?? null },
+        branch: b.branch ?? null, commit: null, build: b.build ?? "", start: b.start, port: b.port, cpus: b.cpus ?? 2, type: null, region: b.region ?? null,
+        keep_awake: b.keep_awake ?? false, secrets: b.secrets ?? [], machine: `m_${String(n).padStart(26, "0")}`, url: null,
+        state: kind === "upload" ? "waiting_for_files" : "building", last_status: null, run: null,
+        created_at: "2026-10-23T07:00:00Z", updated_at: "2026-10-23T07:00:00Z", live_at: null,
+      };
+      this.beginDeployRun(d, "first", kind === "upload" && !this.deployFilesAfter ? "files" : "machine");
+      this.deployments.push(d);
+      return [201, d, {}];
+    }
+    if (path === "/v1/deployments/detect" && method === "POST") {
+      const b = only(body, ["source", "branch", "files"]);
+      if (!b.source && b.files == null) throw new Problem(400, "invalid_request", "say which code");
+      return [200, { object: "deploy_guess", runtime: "node", build: "npm ci", start: "npm start", port: 3000, note: null }, {}];
+    }
+    if (path === "/v1/deployments/repos" && method === "GET") {
+      return list(this.deployRepos.filter((r) => !asked("connection") || r.connection === asked("connection")));
+    }
+    if (path === "/v1/deployments/branches" && method === "GET") {
+      return [200, { object: "list", data: [{ object: "deploy_branch", name: "main", commit: "abc" }], default: "main", known: true, next: null }, {}];
+    }
+    const m = /^\/v1\/deployments\/([^/]+)(?:\/([a-z]+))?$/.exec(path);
+    if (!m) throw new Problem(404, "not_found", "no such route");
+    const d = this.deployments.find((x) => x.id === m[1]);
+    if (!d) throw new Problem(404, "not_found", "no such deployment");
+    const action = m[2];
+    if (action === undefined && method === "GET") {
+      if (d.state === "waiting_for_files" && d.run.step === "machine" && --this.deployFilesAfter <= 0) d.run.step = "files";
+      return [200, d, {}];
+    }
+    if (action === undefined && method === "PATCH") {
+      Object.assign(d, only(body, ["name", "branch", "build", "start", "port", "keep_awake"]));
+      return [200, d, {}];
+    }
+    if (action === undefined && method === "DELETE") {
+      this.deployments.splice(this.deployments.indexOf(d), 1);
+      return [204, null, {}];
+    }
+    if (action === "redeploy" && method === "POST") {
+      if (d.run && d.run.ended_at === null) throw new Problem(409, "conflict", "a deploy of it is under way: wait for it to end");
+      this.beginDeployRun(d, "redeploy", "fetch");
+      return [202, d, {}];
+    }
+    if (action === "files" && method === "PUT") {
+      if (d.run && d.run.ended_at === null && d.run.step === "machine") throw new Problem(409, "conflict", "its machine is not ready yet: send the files again in a moment");
+      this.deploySent.set(d.id, Buffer.from(raw));
+      if (d.state === "waiting_for_files") {
+        d.state = "building";
+        d.run.step = "fetch";
+      } else {
+        this.beginDeployRun(d, "files", "fetch");
+      }
+      return [202, d, {}];
+    }
+    if (action === "wait" && method === "GET") {
+      if (this.deployStuck) throw new Problem(408, "timeout", "it is still deploying");
+      if (d.run && d.run.ended_at === null) {
+        Object.assign(d.run, { state: "live", ended_at: "2026-10-23T07:05:00Z" });
+        Object.assign(d, { state: "live", live_at: "2026-10-23T07:05:00Z", url: `https://${d.port}-${d.machine.slice(2)}.run.wheelmachine.ai` });
+      }
+      return [200, d, {}];
+    }
+    if (action === "runs" && method === "GET") return list(this.deployRuns.get(d.id) ?? []);
+    if (action === "logs" && method === "GET") {
+      return [200, { object: "deploy_log", kind: asked("kind") ?? "build", run: asked("run") ?? d.run.id, text: "built", done: true }, {}];
+    }
+    throw new Problem(404, "not_found", "no such route");
+  }
+
+  beginDeployRun(d, why, step) {
+    const run = {
+      object: "deploy_run", id: `dpr_${String(this.next()).padStart(26, "0")}`, why, state: "working", step, progress: 0, note: null, failure: null,
+      commit: null, branch: null, files: null, created_at: "2026-10-23T07:00:00Z", started_at: null, ended_at: null,
+    };
+    d.run = run;
+    this.deployRuns.set(d.id, [run, ...(this.deployRuns.get(d.id) ?? [])]);
   }
 
   portRoutes(method, mid, at, link, body) {
@@ -1203,7 +1311,7 @@ export class FakeAPI {
       return [200, { object: "list", data: page, next: rows.length > limit ? page[page.length - 1].id : null }, {}];
     }
     if (route === "POST /v1/machines") {
-      const b = only(body, ["name", "project", "region", "gpu", "cpus", "labels", "secrets", "network", "sleep_when_idle", "idle_after_s", "wait_s"]);
+      const b = only(body, ["name", "project", "region", "gpu", "cpus", "labels", "secrets", "network", "sleep_when_idle", "idle_after_s", "desktop", "wait_s"]);
       const secrets = this.secretNames(b.secrets);
       const network = this.policy(b.network);
       if (b.cpus === 16) throw new Problem(400, "invalid_request", "16 CPUs are not offered yet: choose 2, 4 or 8");
@@ -1223,8 +1331,33 @@ export class FakeAPI {
     if (m && method === "POST") return this.give(this.machine(m[1]), m[2] === "fork-for" ? "fork" : "hand_off", body);
     m = /^\/v1\/machines\/([^/]+)\/(take-back|give-back)$/.exec(path);
     if (m && method === "POST") return this.back(this.machine(m[1]), m[2] === "take-back", body);
+    m = /^\/v1\/machines\/([^/]+)\/screen\/(picture|actions)$/.exec(path);
+    if (m) {
+      const mach = this.machine(m[1]);
+      mach.state = "running";
+      const picture = (scale, format) => ({
+        width: Math.floor(2880 * scale),
+        height: Math.floor(1800 * scale),
+        scale,
+        format,
+        data_base64: Buffer.from("the picture's file").toString("base64"),
+      });
+      if (method === "GET" && m[2] === "picture") {
+        return [200, picture(Number(query.get("scale") ?? 0.5), query.get("format") ?? "png"), {}];
+      }
+      if (method === "POST" && m[2] === "actions") {
+        const b = only(body, ["actions", "scale", "picture", "settle_ms"]);
+        if (!b.actions?.length || b.actions.length > 64) throw new Problem(400, "invalid_request", "actions holds 1 to 64 actions");
+        this.screenActions.push(b);
+        const out = { done: b.actions.length };
+        if (b.picture) out.picture = picture(b.scale ?? 0.5, "png");
+        return [200, out, {}];
+      }
+      throw new Problem(404, "not_found", "no such route");
+    }
     m = /^\/v1\/machines\/([^/]+)\/apps(?:\/([^/]+)\/(on|off|link|show))?$/.exec(path);
     if (m) return this.appRoutes(method, m[1], m[2], m[3], body);
+    if (path === "/v1/deployments" || path.startsWith("/v1/deployments/")) return this.deployRoutes(method, path, query, body, raw);
     m = /^\/v1\/machines\/([^/]+)\/ports(?:\/([^/]+)(\/link)?)?$/.exec(path);
     if (m) return this.portRoutes(method, m[1], m[2], m[3] !== undefined, body);
     m = /^\/v1\/machines\/([^/]+)(?:\/([a-z]+))?$/.exec(path);

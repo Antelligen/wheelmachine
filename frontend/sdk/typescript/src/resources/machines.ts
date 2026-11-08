@@ -29,6 +29,10 @@ import type {
   Page,
   ReadFileOptions,
   RequestOptions,
+  ScreenActionsDone,
+  ScreenActionsParams,
+  ScreenPicture,
+  ScreenPictureParams,
   WithResponse,
   WriteFileOptions,
 } from "../types.js";
@@ -41,6 +45,7 @@ export const LONGEST_HOLD_S = 240;
 /** How long the API may hold each kind of call before it answers (seconds). */
 const HOLDS_READY = 30; // create, start, fork: wait_s and this
 const HOLDS_EXEC = 600;
+const HOLDS_SCREEN = 150; // a desktop's picture or its actions: a first start of it, and half a minute with it
 const HOLDS_ACT = 120; // pause, stop, delete
 const HOLDS_KEEP = 1800; // archive, backup
 const HOLDS_GIVE = 60; // a fork for a teammate, or a hand-off: carried out in the call for a minute, then behind it
@@ -376,7 +381,7 @@ export class Machines {
    * shell, `exec(id, { shell: "ls -la | wc -l" })` a line for `sh -lc`. It runs in the work folder as the machine's
    * user unless `cwd` or `user: "root"` says otherwise; a paused machine is woken for it. It runs at most 10
    * minutes (in Node, an answer is waited for 300 seconds); a call that loses its connection is not sent again,
-   * since the command may have run.
+   * since the command may have run, and nor is one answered 503 unless the answer says it never reached its machine.
    */
   async exec(machineId: string, params: ExecParams | string[], options: RequestOptions = {}): Promise<WithResponse<ExecResult>> {
     const p: ExecParams = Array.isArray(params) ? { command: params } : params;
@@ -391,9 +396,92 @@ export class Machines {
       method: "POST",
       path: `/v1/machines/${id(machineId, "machineId")}/exec`,
       json: body,
+      command: true,
       timeout: this.#core.held(HOLDS_EXEC),
       options,
     });
+  }
+
+  /**
+   * Sees the machine's desktop as a picture: `pictureBytes(picture)` is its file. `scale` is 1, or one over a whole number up to
+   * 8 (0.5 when left out: 1440 x 900), and `region` a part of the screen, in pixels of a picture at this scale. A paused machine
+   * is woken for it, and its desktop turned on, which can take up to a minute the first time. It shows whatever is on the
+   * screen, and goes wherever your program sends it: an agent passes it on to whichever model provider it uses.
+   */
+  async screenshot(machineId: string, params: ScreenPictureParams = {}, options: RequestOptions = {}): Promise<WithResponse<ScreenPicture>> {
+    const query: [string, string][] = [];
+    if (params.scale !== undefined) query.push(["scale", String(params.scale)]);
+    if (params.format !== undefined) query.push(["format", params.format]);
+    for (const name of ["x", "y", "w", "h"] as const) {
+      const value = params.region?.[name];
+      if (value !== undefined) query.push([name, String(value)]);
+    }
+    return this.#object<ScreenPicture>({
+      method: "GET",
+      path: `/v1/machines/${id(machineId, "machineId")}/screen/picture`,
+      query,
+      timeout: this.#core.held(HOLDS_SCREEN),
+      options,
+    });
+  }
+
+  /**
+   * Works the machine's desktop, in order: `click` and `move` with `x` and `y`, `drag` with `x`, `y`, `to_x` and `to_y`, `scroll`
+   * with `x`, `y` and `dx` or `dy`, `keys` with `keys`, `type` with `text`, `wait` with `ms`. `x` and `y` are pixels of a picture of
+   * the whole screen at this `scale`. With `picture`, a picture comes back after `settle_ms`. What is typed is never kept or
+   * logged. A call that may have reached the API is never sent again, not even when refused for a moment, since a click or a
+   * word must not happen twice: look at the screen before you send it again.
+   */
+  async useScreen(machineId: string, params: ScreenActionsParams, options: RequestOptions = {}): Promise<WithResponse<ScreenActionsDone>> {
+    if (!Array.isArray(params?.actions)) {
+      throw new TypeError('actions is a list of actions, such as [{ type: "wait", ms: 100 }]');
+    }
+    return this.#object<ScreenActionsDone>({
+      method: "POST",
+      path: `/v1/machines/${id(machineId, "machineId")}/screen/actions`,
+      json: given({ ...params, picture: params.picture ? true : undefined }) ?? {},
+      once: true,
+      timeout: this.#core.held(HOLDS_SCREEN),
+      options,
+    });
+  }
+
+  /** Clicks on the machine's desktop, at a place in pixels of a picture of the whole screen at this `scale`. */
+  click(
+    machineId: string,
+    place: { x: number; y: number; button?: "left" | "middle" | "right"; count?: number; scale?: number },
+    options: RequestOptions = {},
+  ): Promise<WithResponse<ScreenActionsDone>> {
+    const { scale, ...at } = place;
+    return this.useScreen(machineId, { actions: [{ type: "click", ...at }], scale }, options);
+  }
+
+  /**
+   * Types on the machine's desktop, wherever it is taking keys: at most 4096 characters, never kept or logged. Letters of every
+   * language and emoji can be typed, but characters that aren't on an English keyboard, such as accents, Russian, Chinese or emoji,
+   * can come out wrong. Take a picture after typing them to check; a password box can't be checked this way.
+   */
+  type(machineId: string, text: string, options: RequestOptions = {}): Promise<WithResponse<ScreenActionsDone>> {
+    return this.useScreen(machineId, { actions: [{ type: "type", text }] }, options);
+  }
+
+  /**
+   * Presses keys together on the machine's desktop, such as `keys(id, ["ctrl", "c"])`. A key is a character, or one of enter, tab,
+   * escape, backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, ctrl, shift, alt, super, menu,
+   * capslock, printscreen, f1 to f12.
+   */
+  keys(machineId: string, keys: string[], options: RequestOptions = {}): Promise<WithResponse<ScreenActionsDone>> {
+    return this.useScreen(machineId, { actions: [{ type: "keys", keys }] }, options);
+  }
+
+  /** Scrolls on the machine's desktop at a place: `dy` notches down, or up below 0, and `dx` to the right, or to the left below 0. */
+  scroll(
+    machineId: string,
+    place: { x: number; y: number; dx?: number; dy?: number; scale?: number },
+    options: RequestOptions = {},
+  ): Promise<WithResponse<ScreenActionsDone>> {
+    const { scale, ...at } = place;
+    return this.useScreen(machineId, { actions: [{ type: "scroll", ...at }], scale }, options);
   }
 
   /**
@@ -470,4 +558,9 @@ export class Machines {
       throw err;
     }
   }
+}
+
+/** A picture's file, as bytes. */
+export function pictureBytes(picture: ScreenPicture): Uint8Array {
+  return Uint8Array.from(atob(picture.data_base64), (c) => c.charCodeAt(0));
 }

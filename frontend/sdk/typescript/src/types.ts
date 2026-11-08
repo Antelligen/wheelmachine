@@ -81,6 +81,8 @@ export interface Problem {
   code: ErrorCode;
   request_id?: string;
   retry_after_s?: number;
+  /** A command known never to have reached its machine, so that it is safe to send again. */
+  not_run?: boolean;
   /** The limit that stopped the call, where one did. */
   limit?: LimitHit;
   /** What the code a risky step needs must be for, where it needs one (`confirm_required`, `confirm_wrong`). */
@@ -524,8 +526,59 @@ export interface ExecResult {
   stdout_base64?: string;
   stderr: string;
   duration_ms: number;
-  /** True when the output was longer than 8 MiB and was cut there. */
+  /**
+   * True when the output was too long to come back whole: cut, past 8 MiB of a stream or as little as 5 MiB of one that is
+   * mostly <, >, & or control characters, or left out when it could not be brought back. `exit_code` is the command's either way.
+   */
   truncated: boolean;
+}
+
+/** A picture of a machine's desktop. It shows whatever was on the screen, so take care where it goes. */
+export interface ScreenPicture {
+  width: number;
+  height: number;
+  /** How far it was drawn down: 0.5 is half the desktop's size each way. */
+  scale: number;
+  format: "png" | "jpeg";
+  /** The picture's file, as base64. */
+  data_base64: string;
+}
+
+/** A picture to take of a machine's desktop. */
+export interface ScreenPictureParams {
+  /** 1, or one over a whole number up to 8 (0.5 when left out: 1440 x 900). */
+  scale?: number;
+  format?: "png" | "jpeg";
+  /** A part of the screen, in pixels of a picture at this scale. */
+  region?: { x?: number; y?: number; w?: number; h?: number };
+}
+
+/** One thing to do on a machine's desktop. `x` and `y` are pixels of a picture of the whole screen at the call's scale. */
+export type ScreenAction =
+  | { type: "click"; x: number; y: number; button?: "left" | "middle" | "right"; count?: number }
+  | { type: "move"; x: number; y: number }
+  | { type: "drag"; x: number; y: number; to_x: number; to_y: number; button?: "left" | "middle" | "right" }
+  | { type: "scroll"; x: number; y: number; dx?: number; dy?: number }
+  | { type: "keys"; keys: string[] }
+  | { type: "type"; text: string }
+  | { type: "wait"; ms: number };
+
+/** What to do on a machine's desktop in one call, in order. */
+export interface ScreenActionsParams {
+  /** 1 to 64 actions. */
+  actions: ScreenAction[];
+  /** The scale places are given at, and the picture's (0.5 when left out). */
+  scale?: number;
+  /** Answer with a picture of the whole screen once the actions are done. */
+  picture?: boolean;
+  /** How long to wait before that picture (ms, 0 to 10000; 500). */
+  settle_ms?: number;
+}
+
+/** How many actions on a machine's desktop were done, all of them, and the picture when one was asked for. */
+export interface ScreenActionsDone {
+  done: number;
+  picture?: ScreenPicture;
 }
 
 /**
@@ -1092,6 +1145,8 @@ export interface MachineCreateParams {
   sleep_when_idle?: boolean;
   /** How long it must be idle before it pauses by itself (seconds, 60 to 86400; 300). */
   idle_after_s?: number;
+  /** Turn its desktop on behind the answer, so that a first `screenshot()` finds it ready. */
+  desktop?: boolean;
   /** How long to wait for it to be running before answering with it `starting` (seconds, 0 to 600; 60). */
   wait_s?: number;
 }
@@ -1356,6 +1411,11 @@ export interface WriteFileOptions extends RequestOptions {
   contentLength?: number;
 }
 
+export interface SendFilesOptions extends WriteFileOptions {
+  /** How long to wait for its machine to be ready for them, in seconds: 600 when left out. */
+  readyTimeoutS?: number;
+}
+
 /** A model one of the account's AI keys can use, as its provider lists it; `id` is its provider and the provider's own id for it. */
 export interface Model {
   object: "model";
@@ -1494,4 +1554,179 @@ export interface ModelListParams {
 /** In an organisation, the team, by its project's id, the choices are for; left out, the caller's one team. */
 export interface TeamParams {
   project?: string;
+}
+
+/** Where a deployment's code comes from. */
+export interface DeploySource {
+  /** `repo`, a repository of a connection; `url`, a public repository's address; `upload`, files sent. */
+  kind: "repo" | "url" | "upload";
+  provider: string | null;
+  connection: string | null;
+  host: string | null;
+  repo: string | null;
+  url: string | null;
+}
+
+/** One go at putting a version on a deployment's machine. */
+export interface DeployRun {
+  object: "deploy_run";
+  id: string;
+  why: "first" | "redeploy" | "files" | "restart";
+  state: "queued" | "working" | "live" | "failed" | "cancelled";
+  step: "machine" | "files" | "fetch" | "unpack" | "build" | "start" | "check" | "open" | "back";
+  /** How far it is: an estimate, from 0 to 100. */
+  progress: number;
+  /** What it waits for now. */
+  note: string | null;
+  /** Why it failed. What it quotes of its logs is shown only to whoever uses its machine. */
+  failure: string | null;
+  commit: string | null;
+  branch: string | null;
+  files: number | null;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
+/** An app on a machine of its own, at a public address, with its current or last run. */
+export interface Deployment {
+  object: "deployment";
+  id: string;
+  name: string;
+  project: string;
+  held_by: HeldBy | null;
+  kind: "production";
+  source: DeploySource;
+  branch: string | null;
+  commit: string | null;
+  /** What builds it; null unless you use its machine, with a key that holds `cloud:machines:exec`. */
+  build: string | null;
+  /** What starts it; null unless you use its machine, with a key that holds `cloud:machines:exec`. */
+  start: string | null;
+  port: number;
+  cpus: number | null;
+  type: string | null;
+  region: string | null;
+  keep_awake: boolean;
+  secrets: string[];
+  machine: string | null;
+  /** Its public address, once it has been live. */
+  url: string | null;
+  state: "building" | "waiting_for_files" | "live" | "not_answering" | "failed";
+  last_status: number | null;
+  run: DeployRun | null;
+  created_at: string;
+  updated_at: string;
+  live_at: string | null;
+}
+
+export interface DeploymentCreateParams {
+  /** Where its code comes from: `connection` and `repo`, `url`, or `upload: true`. */
+  source: { connection?: string; repo?: string; url?: string; upload?: boolean };
+  /** What starts it, with its port in `$PORT` and `HOST` as 0.0.0.0. */
+  start: string;
+  /** The port it listens on. */
+  port: number;
+  name?: string;
+  project?: string;
+  branch?: string;
+  /** What builds it, run in its code's folder. */
+  build?: string;
+  cpus?: 2 | 4 | 8;
+  /** A machine type of the team's, by id or name, in place of `cpus`. */
+  type?: string;
+  region?: string;
+  secrets?: string[];
+  keep_awake?: boolean;
+}
+
+export interface DeploymentUpdateParams {
+  name?: string;
+  branch?: string;
+  build?: string;
+  start?: string;
+  port?: number;
+  keep_awake?: boolean;
+}
+
+export interface DeploymentListParams {
+  /** Those of one team (a project) alone. */
+  project?: string;
+}
+
+export interface DeploymentWaitParams {
+  /** How long to wait, in seconds; 300 by default. */
+  timeout_s?: number;
+}
+
+export interface DeployLogsParams {
+  kind?: "build" | "app";
+  /** With `build`, a run's own; its last run's when left out. */
+  run?: string;
+}
+
+export interface DeployDetectParams {
+  source?: { connection?: string; repo?: string; url?: string };
+  branch?: string;
+  files?: Record<string, string | null>;
+}
+
+/** How code most likely builds and starts, to change as needed. */
+export interface DeployGuess {
+  object: "deploy_guess";
+  runtime: "node" | "python" | "go" | "rust" | "static" | "docker" | "unknown";
+  build: string;
+  start: string;
+  port: number;
+  note: string | null;
+}
+
+export interface DeployReposParams {
+  /** The team; your first when left out. */
+  project?: string;
+  connection?: string;
+}
+
+/** A repository that can be deployed into a team. */
+export interface DeployRepo {
+  object: "deploy_repo";
+  connection: string;
+  provider: "github" | "gitlab";
+  host: string;
+  repo: string;
+  /** Given to the team already; false: deploying it gives it to the team to read first. */
+  shared: boolean;
+  updated_at: string | null;
+}
+
+export interface DeployBranchesParams {
+  connection?: string;
+  repo?: string;
+  url?: string;
+}
+
+export interface DeployBranch {
+  object: "deploy_branch";
+  name: string;
+  commit: string;
+}
+
+/** A repository's branches. */
+export interface DeployBranchList {
+  object: "list";
+  data: DeployBranch[];
+  default: string | null;
+  /** False for a public repository on a host none are read of: type the branch. */
+  known: boolean;
+  next: null;
+}
+
+/** A deployment's log: a run's own (`build`), or the end of what the app itself writes (`app`). */
+export interface DeployLog {
+  object: "deploy_log";
+  kind: "build" | "app";
+  run: string | null;
+  text: string;
+  /** With `build`, the run has ended; with `app`, the app is not running. */
+  done: boolean;
 }
