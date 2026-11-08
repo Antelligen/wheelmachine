@@ -15,6 +15,9 @@ To install them:
     pip install wheelmachine                              # the Python library
     npm install wheelmachine                              # the TypeScript library
 
+The plugin for your agent, its MCP server and skills, has a repository of its own:
+[`Antelligen/wheelmachine-plugin`](https://github.com/Antelligen/wheelmachine-plugin).
+
 Archives of `wm` for Linux, macOS and Windows are in this repository's [releases](../../releases).
 
 The service itself is not here. The API's contract is [`contracts/openapi.yaml`](contracts/openapi.yaml), and the

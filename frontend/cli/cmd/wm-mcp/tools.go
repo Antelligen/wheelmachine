@@ -89,10 +89,26 @@ const (
 	pSecrets = `"secrets":{"type":"array","maxItems":200,"uniqueItems":true,"items":{"type":"string","pattern":"^[A-Z_][A-Z0-9_]{0,63}$"},"description":"Names of the account's secrets (list_secrets) that every command run in the machine gets as environment variables. Needs a key with the cloud:secrets:write scope, of the whole account."}`
 	pApp     = `"app":{"type":"string","pattern":"^[a-z0-9-]{1,32}$","description":"The app's name, as list_apps gives it, such as desktop."}`
 	pAccess  = `"access_s":{"type":"integer","minimum":60,"maximum":3600,"default":1800,"description":"How long the browser that opens the link may reach the app, in seconds."}`
+	pScale   = `"scale":{"type":"number","minimum":0.125,"maximum":1,"default":0.5,"description":"How far the picture is drawn down: 1, or one over a whole number up to 8. The desktop is 2880 x 1800 pixels, so 0.5 gives 1440 x 900."}`
 	pNetwork = `"network":{"type":"object","additionalProperties":false,"required":["internet"],"properties":{"internet":{"type":"string","enum":["open","closed","allowed"],"description":"open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed (only what allow lists)."},"allow":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":253},"description":"For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."}},"description":"What it may reach on the internet."}`
 )
 
+// tools is every tool, as tools.json holds them; offered is those tools/list gives.
 func tools() []tool {
+	return append(baseTools(), deployTools()...)
+}
+
+func offered() []tool {
+	if deployListed {
+		return tools()
+	}
+	return baseTools()
+}
+
+// Whether tools/list gives Deploy's tools. (A variable for the tests of what they do; never set elsewhere.)
+var deployListed = api.DeployOpen
+
+func baseTools() []tool {
 	return []tool{
 		define("list_machines", "List machines",
 			"List the account's machines, newest first, a page at a time; narrow by project, state or labels. Answers "+
@@ -120,6 +136,7 @@ func tools() []tool {
 				pLabels,
 				`"sleep_when_idle":{"type":"boolean","default":true,"description":"False: it never pauses by itself, and runs (charged) until it is paused or stopped."}`,
 				`"idle_after_s":{"type":"integer","minimum":60,"maximum":86400,"default":300,"description":"How long it must be idle before it pauses by itself."}`,
+				`"desktop":{"type":"boolean","default":false,"description":"Turn its desktop on behind the answer, so that a first take_screenshot finds it ready. It is off otherwise, and its first start can take up to a minute."}`,
 				pSecrets, pNetwork, pWaitS),
 			makes, createMachine),
 		define("get_machine", "Get a machine",
@@ -248,6 +265,38 @@ func tools() []tool {
 				"browser into the app's private address once, within five minutes, landing on its page. Give it to the "+
 				"person, and do not keep it. Each call makes a new link.",
 			object([]string{"machine", "app"}, pMachine, pApp, pAccess), makes, openApp),
+		define("take_screenshot", "See a machine's desktop",
+			"See a machine's desktop as a picture, with its width and height in pixels. A paused machine is woken for it, "+
+				"and its desktop turned on, which can take up to a minute the first time. It shows whatever is on the "+
+				"screen, and goes on to whichever model provider reads this result: close what should not be seen.",
+			object([]string{"machine"}, pMachine, pScale,
+				`"format":{"type":"string","enum":["png","jpeg"],"default":"png","description":"png is exact, and what to read small text from; jpeg is smaller for a screen of photographs."}`,
+				`"region":{"type":"object","additionalProperties":false,"properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"w":{"type":"integer","minimum":1},"h":{"type":"integer","minimum":1}},"description":"Only this part of the screen, in pixels of a picture at this scale; to the screen's edge when w or h is left out."}`),
+			changes, takeScreenshot),
+		define("use_screen", "Work a machine's desktop",
+			"Work a machine's desktop in order: click, drag, scroll, press keys, type, wait. x and y are pixels of a picture "+
+				"of the whole screen at the same scale. All the actions are checked before the first. With then_screenshot, a "+
+				"picture comes back after settle_ms: it shows whatever is on the screen, and goes on to whichever model provider reads "+
+				"this result. We never keep or log what is typed, but your model wrote it, so its provider has seen it. Letters of every "+
+				"language and emoji can be typed, but characters that aren't on an English keyboard, such as accents, Russian, Chinese or emoji, can come out wrong. "+
+				"Take a picture after typing them to check; a password box can't be checked this way. "+
+				"A call that fails part of the way says how many actions were done: look at the screen before you try again.",
+			object([]string{"machine", "actions"}, pMachine,
+				`"actions":{"type":"array","minItems":1,"maxItems":64,"description":"What to do, in order.","items":{"type":"object","additionalProperties":false,"required":["type"],"properties":{`+
+					`"type":{"type":"string","enum":["click","move","drag","scroll","keys","type","wait"],"description":"click and move need x and y; drag x, y, to_x and to_y; scroll x, y and dx or dy; keys keys; type text; wait ms."},`+
+					`"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},`+
+					`"to_x":{"type":"integer","minimum":0,"description":"Where a drag ends."},"to_y":{"type":"integer","minimum":0,"description":"Where a drag ends."},`+
+					`"button":{"type":"string","enum":["left","middle","right"],"default":"left"},`+
+					`"count":{"type":"integer","minimum":1,"maximum":3,"default":1,"description":"2 for a double click."},`+
+					`"dx":{"type":"integer","minimum":-100,"maximum":100,"description":"Notches to scroll to the right, or to the left below 0."},`+
+					`"dy":{"type":"integer","minimum":-100,"maximum":100,"description":"Notches to scroll down, or up below 0."},`+
+					`"keys":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string"},"description":"Keys pressed together, such as [\"ctrl\", \"c\"]. A key is a character, or one of enter, tab, escape, backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, ctrl, shift, alt, super, menu, capslock, printscreen, f1 to f12."},`+
+					`"text":{"type":"string","description":"What to type: at most 4096 characters a call."},`+
+					`"ms":{"type":"integer","minimum":0,"maximum":10000,"description":"How long to wait."}}}}`,
+				pScale,
+				`"then_screenshot":{"type":"boolean","default":false,"description":"Answer with a picture of the whole screen, at this scale, once the actions are done."}`,
+				`"settle_ms":{"type":"integer","minimum":0,"maximum":10000,"default":500,"description":"How long to wait before that picture, so that the screen has caught up."}`),
+			runsAnything, useScreen),
 		define("whoami", "Who am I",
 			"The account and API key in use: the key's scopes and projects, and whether the account can spend.",
 			object(nil), reads, whoami),
@@ -312,9 +361,16 @@ type failure struct {
 	Detail      string  `json:"detail"`
 	RequestID   string  `json:"request_id,omitempty"`
 	RetryAfterS float64 `json:"retry_after_s,omitempty"`
+	Deployment  string  `json:"deployment,omitempty"` // one made by the call that failed after it
 }
 
 func failureOf(err error) failure {
+	var made *madeError
+	if errors.As(err, &made) {
+		f := failureOf(made.err)
+		f.Deployment, f.Detail = made.id, f.Detail+" ("+made.id+": "+made.next+")"
+		return f
+	}
 	var ie *inputError
 	var ae *api.Error
 	var ce *api.ConnError
@@ -449,6 +505,7 @@ type createArgs struct {
 	SleepWhenIdle *bool             `json:"sleep_when_idle"`
 	IdleAfterS    *int              `json:"idle_after_s"`
 	Network       *api.Network      `json:"network"`
+	Desktop       bool              `json:"desktop"`
 	WaitS         *float64          `json:"wait_s"`
 }
 
@@ -464,7 +521,7 @@ func (a *createArgs) check() error {
 
 func createMachine(ctx context.Context, c *api.Client, a *createArgs) (any, error) {
 	mc := api.MachineCreate{Name: a.Name, Region: a.Region, GPU: a.GPU, CPUs: a.CPUs, Labels: a.Labels, Secrets: a.Secrets,
-		Network: a.Network, SleepWhenIdle: a.SleepWhenIdle, IdleAfterS: a.IdleAfterS, WaitS: a.WaitS}
+		Network: a.Network, SleepWhenIdle: a.SleepWhenIdle, IdleAfterS: a.IdleAfterS, Desktop: a.Desktop, WaitS: a.WaitS}
 	if a.Project != "" {
 		id, err := c.FindProject(ctx, a.Project)
 		if err != nil {
@@ -1004,3 +1061,109 @@ func listRegions(ctx context.Context, c *api.Client, _ *noArgs) (any, error) {
 }
 
 func whoami(ctx context.Context, c *api.Client, _ *noArgs) (any, error) { return c.Me(ctx) }
+
+// A picture and what is said of it, as a tool's value: an image block, and the rest of the answer in words beside it.
+type pictured struct {
+	said  any
+	image content
+}
+
+// What a tool says of a picture beside it: everything but its bytes, which are the picture itself.
+type pictureSaid struct {
+	Done   *int    `json:"done,omitempty"`
+	Width  int     `json:"width"`
+	Height int     `json:"height"`
+	Scale  float64 `json:"scale"`
+	Format string  `json:"format"`
+}
+
+func pictureOf(p *api.ScreenPicture, done *int) *pictured {
+	mime := "image/png"
+	if p.Format == "jpeg" {
+		mime = "image/jpeg"
+	}
+	return &pictured{said: pictureSaid{Done: done, Width: p.Width, Height: p.Height, Scale: p.Scale, Format: p.Format},
+		image: content{Type: "image", Data: p.DataBase64, MimeType: mime}}
+}
+
+type screenshotArgs struct {
+	Machine string   `json:"machine"`
+	Scale   *float64 `json:"scale"`
+	Format  string   `json:"format"`
+	Region  *struct {
+		X *int `json:"x"`
+		Y *int `json:"y"`
+		W *int `json:"w"`
+		H *int `json:"h"`
+	} `json:"region"`
+}
+
+func (a *screenshotArgs) check() error {
+	if err := needMachine(a.Machine); err != nil {
+		return err
+	}
+	if a.Format != "" && a.Format != "png" && a.Format != "jpeg" {
+		return inputf("format is png or jpeg")
+	}
+	return nil
+}
+
+func takeScreenshot(ctx context.Context, c *api.Client, a *screenshotArgs) (any, error) {
+	id, err := c.FindMachine(ctx, a.Machine)
+	if err != nil {
+		return nil, err
+	}
+	p := api.ScreenPictureParams{Format: a.Format}
+	if a.Scale != nil {
+		p.Scale = *a.Scale
+	}
+	if a.Region != nil {
+		p.Region = &api.ScreenRegion{}
+		for _, field := range []struct {
+			from *int
+			to   *int
+		}{{a.Region.X, &p.Region.X}, {a.Region.Y, &p.Region.Y}, {a.Region.W, &p.Region.W}, {a.Region.H, &p.Region.H}} {
+			if field.from != nil {
+				*field.to = *field.from
+			}
+		}
+	}
+	pic, err := c.TakeScreenPicture(ctx, id, p)
+	if err != nil {
+		return nil, err
+	}
+	return pictureOf(pic, nil), nil
+}
+
+type useScreenArgs struct {
+	Machine        string             `json:"machine"`
+	Actions        []api.ScreenAction `json:"actions"`
+	Scale          *float64           `json:"scale"`
+	ThenScreenshot bool               `json:"then_screenshot"`
+	SettleMS       *int               `json:"settle_ms"`
+}
+
+func (a *useScreenArgs) check() error {
+	if err := needMachine(a.Machine); err != nil {
+		return err
+	}
+	if len(a.Actions) == 0 || len(a.Actions) > 64 {
+		return inputf("actions holds 1 to 64 actions")
+	}
+	return nil
+}
+
+func useScreen(ctx context.Context, c *api.Client, a *useScreenArgs) (any, error) {
+	id, err := c.FindMachine(ctx, a.Machine)
+	if err != nil {
+		return nil, err
+	}
+	done, err := c.WorkScreen(ctx, id, api.ScreenActions{Actions: a.Actions, Scale: a.Scale, Picture: a.ThenScreenshot, SettleMS: a.SettleMS})
+	if err != nil {
+		return nil, err
+	}
+	if done.Picture == nil {
+		return map[string]int{"done": done.Done}, nil
+	}
+	return pictureOf(done.Picture, &done.Done), nil
+}

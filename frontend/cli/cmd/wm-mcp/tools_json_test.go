@@ -27,9 +27,10 @@ func toolsJSON(t *testing.T) []byte {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(struct {
-		Instructions string `json:"instructions"`
-		Tools        []tool `json:"tools"`
-	}{instructions, tools()}); err != nil {
+		Instructions       string `json:"instructions"`
+		DeployInstructions string `json:"deploy_instructions"`
+		Tools              []tool `json:"tools"`
+	}{instructions, deployInstructions, tools()}); err != nil {
 		t.Fatal(err)
 	}
 	return b.Bytes()
@@ -62,7 +63,8 @@ func TestToolsJSONIsWhatTheServerOffers(t *testing.T) {
 	if said := s.initialize("2025-11-25")["instructions"]; said != file.Instructions {
 		t.Fatalf("initialize says %q", said)
 	}
-	if listed := ok(t, s.request(2, "tools/list", nil))["tools"]; !reflect.DeepEqual(listed, file.Tools) {
+	// (those of Deploy's it holds are for the hosted server until Deploy opens: deploy_test.go)
+	if listed := ok(t, s.request(2, "tools/list", nil))["tools"]; !reflect.DeepEqual(listed, file.Tools[:len(offered())]) {
 		t.Fatalf("tools/list answers other tools than %s", toolsFile)
 	}
 }

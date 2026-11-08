@@ -233,7 +233,7 @@ func TestCommandIsNotSentAgainWhenItMayHaveRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := newTestClient(t, srv.URL)
-	for _, s := range []int{503, 504} {
+	for _, s := range []int{502, 503, 504} {
 		n.Store(0)
 		status = s
 		_, err := c.Exec(context.Background(), "m_00000000000000000000000001", ExecRequest{Command: []string{"true"}})
@@ -1400,5 +1400,38 @@ func TestBackupsAndForksFromThemAreAskedAsTheAPITakesThem(t *testing.T) {
 	}
 	if strings.Join(asked, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("asked:\n%s", strings.Join(asked, "\n"))
+	}
+}
+
+// A click or a word must not happen twice, so actions on a screen are never sent again once they may have reached the API, not
+// even for a refusal that says to try again. A picture is only asked for, and is.
+func TestActionsOnAScreenAreNeverSentAgain(t *testing.T) {
+	for _, status := range []int{429, 503, 504} {
+		var posts atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			posts.Add(1)
+			writeProblem(w, status, "rate_limited", "not now", "0")
+		}))
+		c, _ := newTestClient(t, srv.URL)
+		text := "pay"
+		_, err := c.WorkScreen(context.Background(), "m_x", ScreenActions{Actions: []ScreenAction{{Type: "type", Text: &text}}})
+		srv.Close()
+		if err == nil || posts.Load() != 1 {
+			t.Fatalf("%d: sent %d times, %v", status, posts.Load(), err)
+		}
+	}
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if gets.Add(1) == 1 {
+			writeProblem(w, 429, "rate_limited", "not now", "0")
+			return
+		}
+		_, _ = io.WriteString(w, `{"width":1,"height":1,"scale":1,"format":"png","data_base64":""}`)
+	}))
+	defer srv.Close()
+	c, _ := newTestClient(t, srv.URL)
+	if _, err := c.TakeScreenPicture(context.Background(), "m_x", ScreenPictureParams{}); err != nil || gets.Load() != 2 {
+		t.Fatalf("a picture: asked %d times, %v", gets.Load(), err)
 	}
 }

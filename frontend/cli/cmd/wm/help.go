@@ -76,6 +76,11 @@ const machinesHelp = `Usage: wm machines <command> [arguments] [flags]
   label <machine> k=v... k-   set labels; k- takes one off
   rename <machine> <name>     give it another name
   secrets <machine> NAME...   say which secrets it gets; --none takes them all away
+  screenshot <machine> [file] see its desktop as a picture; it shows whatever is on the screen
+  click <machine> <x> <y>     click on its desktop, at a place in pixels of a picture of it
+  type <machine> [text]       type on its desktop: the text, or standard input with none
+  keys <machine> <keys>...    press keys on its desktop, such as ctrl+c
+  scroll <machine> <x> <y>    scroll on its desktop: --dy or --dx notches
 
 Run wm machines <command> -h for its flags.
 `

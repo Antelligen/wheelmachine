@@ -26,6 +26,7 @@ https://github.com/Antelligen/wheelmachine/releases.
     wm ports link box 8080           # a link that lets one browser into that address for 30 minutes
     wm apps ls box                   # its apps: a desktop and a code editor in the browser, agents in its terminal
     wm apps on box desktop           # prints a one-time link that opens its desktop in your browser
+    wm machines screenshot box       # its desktop as a picture, in screen.png; see also click, type, keys and scroll
     wm machines pause box            # memory kept, no running time charged
     wm machines rm --yes box
 
@@ -58,7 +59,8 @@ Choose what a machine can reach on the internet:
     wm machines network box --internet allowed --allow '*.githubusercontent.com'   # changes it at once, no restart
 
 `open` (the default): the whole internet. `closed`: none of it, though name lookups and some sites we host still work.
-`allowed`: only the names (HTTP and HTTPS) and IP ranges (other ports) you list.
+`allowed`: only the addresses of the names you list (HTTP and HTTPS; other sites at those addresses can still answer)
+and the IP ranges you list (other ports).
 
 Every command run in a machine gets the secrets it was given as environment variables; a variable the command is
 given itself (`env`) wins over a secret of the same name. A value is never taken from the command line - where the
@@ -160,8 +162,10 @@ for the server alone, with only the scopes it needs, is the safest:
 Tools: `list_machines`, `create_machine`, `get_machine`, `run_command`, `read_file`, `write_file`, `pause_machine`,
 `start_machine`, `stop_machine`, `fork_machine`, `backup_machine`, `list_backups`, `delete_machine`, `list_gpus`,
 `list_regions`, `list_secrets`, `give_secrets`, `set_network`, `list_apps`, `turn_app_on`, `turn_app_off`, `show_app`, `open_app`,
-`whoami`. Each answers compact JSON; a failed call comes back as a result with `isError` and the API's `code` and
-`detail`. The secrets tools name secrets only: no tool takes or answers a value.
+`take_screenshot`, `use_screen`, `whoami`. Each answers compact JSON; `take_screenshot`, and `use_screen` when asked for a
+picture, answer a real picture beside it, which shows whatever is on the screen and goes on to your model's provider. A failed
+call comes back as a result with `isError` and the API's `code` and `detail`. The secrets tools name secrets only: no tool takes
+or answers a value.
 
 ## The Go client
 

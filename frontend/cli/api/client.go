@@ -34,7 +34,7 @@ import (
 // Version is wm's, wm-mcp's and this module's version, sent in the User-Agent and shown by `wm --version`: the one
 // place it is kept. A release build stamps the same into the programs (-ldflags -X, release.py), from a tag that must
 // say it too.
-var Version = "0.1.3"
+var Version = "0.1.4"
 
 const (
 	// DefaultBaseURL is where the API is reached when WHEELMACHINE_BASE_URL says nothing else.
@@ -308,6 +308,7 @@ type call struct {
 	create       bool // makes something: carries an Idempotency-Key, the same on every try
 	idemKey      string
 	replay       bool          // safe to send again even when the first may have reached the API
+	once         bool          // never sent again once it may have reached the API, not even when refused for a moment
 	timeout      time.Duration // for each try; 0: the caller's context alone
 	accept       string
 	confirm      string // the confirm code a risky step carries (X-Confirm-Code), when it needs one
@@ -401,9 +402,9 @@ func (c *Client) do(ctx context.Context, cl call) (*http.Response, error) {
 
 // Which errors are temporary: a limit of calls a minute; nothing available or no answer just now, for a call that may come
 // again; and, for a call with an Idempotency-Key, the first one with it still running. Something not open yet
-// (not_open) never does, whatever the call and its status.
+// (not_open) never does, whatever the call and its status, and nor does a call that is only ever sent once.
 func (c *Client) retryable(cl *call, e *Error) bool {
-	if e.Code == CodeNotOpen {
+	if cl.once || e.Code == CodeNotOpen {
 		return false
 	}
 	switch e.Status {

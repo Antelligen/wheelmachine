@@ -244,6 +244,26 @@ func TestExecAsJSON(t *testing.T) {
 	}
 }
 
+// Output too long to come back whole was cut, at 8 MiB of a stream or as little as 5 MiB, or, when it could not be brought
+// back at all, left out: wm says which, and still exits with the command's own code.
+func TestExecSaysWhetherLongOutputWasCutOrLeftOut(t *testing.T) {
+	h := newHarness(t)
+	h.api.AddMachine("web", api.StateRunning)
+	h.api.Exec = func(string, api.ExecRequest) api.ExecResult {
+		return api.ExecResult{ExitCode: 2, Stdout: "the start\n", Truncated: true}
+	}
+	r := h.wm("", "exec", "web", "--", "make").must(t, 2)
+	if r.stdout != "the start\n" || r.stderr != "wm: the output was too long and was cut; for long output, write it to a file and copy it with wm cp\n" {
+		t.Fatalf("cut: stdout %q stderr %q", r.stdout, r.stderr)
+	}
+	h.api.Exec = func(string, api.ExecRequest) api.ExecResult { return api.ExecResult{ExitCode: 2, Truncated: true} }
+	r = h.wm("", "exec", "web", "--", "make").must(t, 2)
+	if r.stdout != "" || r.stderr != "wm: the command ran, but its output was too long to bring back and was left out; for long output, "+
+		"write it to a file and copy it with wm cp\n" {
+		t.Fatalf("left out: stdout %q stderr %q", r.stdout, r.stderr)
+	}
+}
+
 func TestShRunsALineOfShell(t *testing.T) {
 	h := newHarness(t)
 	web := h.api.AddMachine("web", api.StateRunning)

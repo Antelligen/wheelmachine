@@ -93,8 +93,13 @@ func (a *app) runIn(ctx context.Context, machine string, req api.ExecRequest, f 
 		if _, err := io.WriteString(a.stderr, res.Stderr); err != nil {
 			return err
 		}
-		if res.Truncated {
-			fmt.Fprintln(a.stderr, "wm: the output was longer than 8 MiB and was cut there; for long output, write it to a file and copy it with wm cp")
+		// too long to come back whole: cut (past 8 MiB of a stream, or as little as 5 MiB), or, with no output at all, left out
+		switch {
+		case res.Truncated && len(out) == 0 && res.Stderr == "":
+			fmt.Fprintln(a.stderr, "wm: the command ran, but its output was too long to bring back and was left out; for long output, "+
+				"write it to a file and copy it with wm cp")
+		case res.Truncated:
+			fmt.Fprintln(a.stderr, "wm: the output was too long and was cut; for long output, write it to a file and copy it with wm cp")
 		}
 	}
 	if res.ExitCode != 0 {

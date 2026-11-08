@@ -29,6 +29,8 @@ type app struct {
 
 	json, quiet bool
 
+	deployLeftOut []string // what a folder sent left out, for what is answered of it (nil: no folder was sent)
+
 	in    *bufio.Reader // stdin, a line at a time, when asking
 	c     *api.Client
 	fs    *flag.FlagSet // the command's flags, for its help
@@ -110,7 +112,7 @@ flags:
 			fmt.Fprintf(a.stdout, "wm %s\n", api.Version)
 			return nil
 		case "h", "help":
-			fmt.Fprint(a.stdout, mainHelp)
+			fmt.Fprint(a.stdout, wmHelp())
 			return nil
 		default:
 			return usagef("no flag %s here: see wm -h", args[0])
@@ -118,7 +120,7 @@ flags:
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		fmt.Fprint(a.stderr, mainHelp)
+		fmt.Fprint(a.stderr, wmHelp())
 		return &exitError{code: 2}
 	}
 	name, rest := args[0], args[1:]
@@ -158,6 +160,10 @@ flags:
 		return a.group(ctx, "keys", keysHelp, keyCommands, rest)
 	case "secrets":
 		return a.group(ctx, "secrets", secretsHelp, secretCommands, rest)
+	case "deploy":
+		return a.deployCmd(ctx, rest)
+	case "deployments":
+		return a.group(ctx, "deployments", deployWords(deploymentsHelp), deploymentCommands, rest)
 	case "ports":
 		return a.group(ctx, "ports", portsHelp, portCommands, rest)
 	case "apps":
@@ -188,7 +194,7 @@ flags:
 
 func (a *app) help(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(a.stdout, mainHelp)
+		fmt.Fprint(a.stdout, wmHelp())
 		return nil
 	}
 	switch args[0] {

@@ -399,6 +399,8 @@ type MachineCreate struct {
 	// Type makes it as one of its team's machine types says, by the type's id or name: its size, internet, sleep and
 	// put-away time are the type's then, and are not given beside it.
 	Type string `json:"type,omitempty"`
+	// Desktop turns its desktop on behind the answer, so that its screen is ready for a first picture.
+	Desktop bool `json:"desktop,omitempty"`
 	// WaitS is how long the API waits for the machine to run before answering it is still starting (202); nil
 	// leaves it to the API (60 seconds).
 	WaitS *float64 `json:"wait_s,omitempty"`
@@ -484,7 +486,9 @@ type ExecResult struct {
 	StdoutBase64 string  `json:"stdout_base64,omitempty"`
 	Stderr       string  `json:"stderr"`
 	DurationMS   float64 `json:"duration_ms"`
-	Truncated    bool    `json:"truncated"` // the output was longer than 8 MiB and was cut there
+	// Truncated says the output was too long to come back whole: cut, past 8 MiB of a stream or as little as 5 MiB of one that is
+	// mostly <, >, & or control characters, or left out when it could not be brought back. ExitCode is the command's either way.
+	Truncated bool `json:"truncated"`
 }
 
 // MachineMetrics is what a machine used, a point a step from the time asked for on. A point a minute is kept, for

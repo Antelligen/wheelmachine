@@ -51,6 +51,9 @@ type Server struct {
 	URL string // where it listens, for WHEELMACHINE_BASE_URL
 	Key string // the one API key that works
 
+	// Deploy is how Deploy answers (deployments.go).
+	Deploy deployFake
+
 	// Exec answers a command; when nil, a command writes its words (or its shell line) and a newline to stdout.
 	Exec func(machine string, req api.ExecRequest) api.ExecResult
 	// Refuse, when it gives an error for a request, is answered in its place.
@@ -89,6 +92,13 @@ type Server struct {
 	// An approved sign-in is given the one key that works, under the name it asked for.
 	LoginsShut bool
 	Decide     func(ask int) string
+
+	// ScreenActions is what POST /v1/machines/{id}/screen/actions was last sent; ScreenAsked what GET .../screen/picture
+	// was last asked with.
+	ScreenActions api.ScreenActions
+	ScreenAsked   url.Values
+	// DesktopAsked is whether the last machine made asked for its desktop to be turned on.
+	DesktopAsked bool
 
 	// PortsNotOpen refuses opening a port, and making a link to one, as the API does where it is not open:
 	// 503 not_open.
@@ -269,59 +279,61 @@ func New(t testing.TB) *Server {
 		Shown: "ak_live_abcd…abcd", State: "active", RatePerMinute: &rate, CreatedAt: base}}
 	mux := http.NewServeMux()
 	for pattern, fn := range map[string]http.HandlerFunc{
-		"GET /v1/me":                       s.me,
-		"GET /v1/usage":                    s.usage,
-		"GET /v1/credit":                   s.credit,
-		"POST /v1/credit/purchases":        s.buyCredit,
-		"PUT /v1/credit/currency":          s.setCurrency,
-		"GET /v1/usage/limits":             s.limits,
-		"PUT /v1/usage/limits/account":     s.setAccountLimit,
-		"GET /v1/regions":                  s.regions,
-		"GET /v1/gpus":                     s.gpus,
-		"GET /v1/projects":                 s.listProjects,
-		"POST /v1/projects":                s.createProject,
-		"GET /v1/projects/{id}":            s.getProject,
-		"PATCH /v1/projects/{id}":          s.renameProject,
-		"DELETE /v1/projects/{id}":         s.deleteProject,
-		"GET /v1/keys":                     s.listKeys,
-		"POST /v1/keys":                    s.createKey,
-		"POST /v1/confirm-codes":           s.sendConfirmCode,
-		"DELETE /v1/keys/{id}":             s.revokeKey,
-		"GET /v1/machines":                 s.listMachines,
-		"POST /v1/machines":                s.createMachine,
-		"GET /v1/machines/{id}":            s.getMachine,
-		"PATCH /v1/machines/{id}":          s.updateMachine,
-		"DELETE /v1/machines/{id}":         s.deleteMachine,
-		"POST /v1/machines/{id}/start":     s.move("start"),
-		"POST /v1/machines/{id}/pause":     s.move("pause"),
-		"POST /v1/machines/{id}/stop":      s.move("stop"),
-		"POST /v1/machines/{id}/archive":   s.move("archive"),
-		"POST /v1/machines/{id}/fork":      s.forkMachine,
-		"POST /v1/machines/{id}/copy":      s.forkMachine, // a fork's route before it was one, kept
-		"POST /v1/machines/{id}/fork-for":  s.give(api.RequestFork),
-		"POST /v1/machines/{id}/hand-off":  s.give(api.RequestHandOff),
-		"POST /v1/machines/{id}/take-back": s.back(true),
-		"POST /v1/machines/{id}/give-back": s.back(false),
-		"GET /v1/requests":                 s.listRequests,
-		"POST /v1/requests":                s.askRequest,
-		"DELETE /v1/requests/{id}":         s.takeBack,
-		"GET /v1/projects/{id}/rules":      s.teamRules,
-		"GET /v1/projects/{id}/types":      s.listTypes,
-		"POST /v1/machines/batch":          s.createMachines,
-		"POST /v1/machines/{id}/backups":   s.backup,
-		"GET /v1/machines/{id}/backups":    s.listMachineBackups,
-		"GET /v1/backups":                  s.listBackups,
-		"GET /v1/machines/{id}/wait":       s.wait,
-		"GET /v1/machines/{id}/metrics":    s.metrics,
-		"POST /v1/machines/{id}/exec":      s.exec,
-		"POST /v1/ssh/certificates":        s.sshCertificate,
-		"GET /v1/machines/{id}/terminal":   s.terminal,
-		"GET /v1/machines/{id}/files":      s.readFile,
-		"PUT /v1/machines/{id}/files":      s.writeFile,
-		"GET /v1/secrets":                  s.listSecrets,
-		"GET /v1/secrets/presets":          s.listPresets,
-		"PUT /v1/secrets/{name}":           s.setSecret,
-		"DELETE /v1/secrets/{name}":        s.deleteSecret,
+		"GET /v1/me":                            s.me,
+		"GET /v1/usage":                         s.usage,
+		"GET /v1/credit":                        s.credit,
+		"POST /v1/credit/purchases":             s.buyCredit,
+		"PUT /v1/credit/currency":               s.setCurrency,
+		"GET /v1/usage/limits":                  s.limits,
+		"PUT /v1/usage/limits/account":          s.setAccountLimit,
+		"GET /v1/regions":                       s.regions,
+		"GET /v1/gpus":                          s.gpus,
+		"GET /v1/projects":                      s.listProjects,
+		"POST /v1/projects":                     s.createProject,
+		"GET /v1/projects/{id}":                 s.getProject,
+		"PATCH /v1/projects/{id}":               s.renameProject,
+		"DELETE /v1/projects/{id}":              s.deleteProject,
+		"GET /v1/keys":                          s.listKeys,
+		"POST /v1/keys":                         s.createKey,
+		"POST /v1/confirm-codes":                s.sendConfirmCode,
+		"DELETE /v1/keys/{id}":                  s.revokeKey,
+		"GET /v1/machines":                      s.listMachines,
+		"POST /v1/machines":                     s.createMachine,
+		"GET /v1/machines/{id}":                 s.getMachine,
+		"PATCH /v1/machines/{id}":               s.updateMachine,
+		"DELETE /v1/machines/{id}":              s.deleteMachine,
+		"POST /v1/machines/{id}/start":          s.move("start"),
+		"POST /v1/machines/{id}/pause":          s.move("pause"),
+		"POST /v1/machines/{id}/stop":           s.move("stop"),
+		"POST /v1/machines/{id}/archive":        s.move("archive"),
+		"POST /v1/machines/{id}/fork":           s.forkMachine,
+		"POST /v1/machines/{id}/copy":           s.forkMachine, // a fork's route before it was one, kept
+		"POST /v1/machines/{id}/fork-for":       s.give(api.RequestFork),
+		"POST /v1/machines/{id}/hand-off":       s.give(api.RequestHandOff),
+		"POST /v1/machines/{id}/take-back":      s.back(true),
+		"POST /v1/machines/{id}/give-back":      s.back(false),
+		"GET /v1/requests":                      s.listRequests,
+		"POST /v1/requests":                     s.askRequest,
+		"DELETE /v1/requests/{id}":              s.takeBack,
+		"GET /v1/projects/{id}/rules":           s.teamRules,
+		"GET /v1/projects/{id}/types":           s.listTypes,
+		"POST /v1/machines/batch":               s.createMachines,
+		"POST /v1/machines/{id}/backups":        s.backup,
+		"GET /v1/machines/{id}/backups":         s.listMachineBackups,
+		"GET /v1/backups":                       s.listBackups,
+		"GET /v1/machines/{id}/wait":            s.wait,
+		"GET /v1/machines/{id}/metrics":         s.metrics,
+		"POST /v1/machines/{id}/exec":           s.exec,
+		"GET /v1/machines/{id}/screen/picture":  s.screenPicture,
+		"POST /v1/machines/{id}/screen/actions": s.screenActions,
+		"POST /v1/ssh/certificates":             s.sshCertificate,
+		"GET /v1/machines/{id}/terminal":        s.terminal,
+		"GET /v1/machines/{id}/files":           s.readFile,
+		"PUT /v1/machines/{id}/files":           s.writeFile,
+		"GET /v1/secrets":                       s.listSecrets,
+		"GET /v1/secrets/presets":               s.listPresets,
+		"PUT /v1/secrets/{name}":                s.setSecret,
+		"DELETE /v1/secrets/{name}":             s.deleteSecret,
 
 		"GET /v1/code":                        s.code,
 		"GET /v1/code/connections/{id}/repos": s.codeRepos,
@@ -370,6 +382,7 @@ func New(t testing.TB) *Server {
 	} {
 		mux.HandleFunc(pattern, fn)
 	}
+	s.deployRoutes(mux)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		refuse(w, r, Refusal{Status: 404, Code: "not_found", Detail: "no such route"})
 	})
@@ -1240,6 +1253,7 @@ func (s *Server) createMachine(w http.ResponseWriter, r *http.Request) {
 		Network    *api.Network      `json:"network"`
 		PutAwayS   *int              `json:"put_away_after_s"`
 		Type       string            `json:"type"`
+		Desktop    bool              `json:"desktop"`
 	}
 	if !decode(w, r, &in, true) || !waitOK(w, r, in.WaitS) {
 		return
@@ -1247,8 +1261,9 @@ func (s *Server) createMachine(w http.ResponseWriter, r *http.Request) {
 	s.once(w, r, body, func() (int, any, *Refusal) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.DesktopAsked = in.Desktop
 		if in.Type != "" {
-			if in.CPUs != nil || in.GPU != "" || in.Network != nil || in.SleepIdle != nil || in.IdleAfterS != nil || in.PutAwayS != nil {
+			if in.CPUs != nil || in.GPU != "" || in.Network != nil || in.SleepIdle != nil || in.IdleAfterS != nil || in.PutAwayS != nil || in.Desktop {
 				return 0, nil, &Refusal{Status: 400, Code: "invalid_request", Detail: "a machine made from a type is made as the type says"}
 			}
 			project := s.projects[0].ID
@@ -1851,6 +1866,65 @@ func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, s.view(m))
+}
+
+// A picture of a desktop: a PNG of one pixel, whatever is asked, said to be of the size a scale would give.
+const screenPixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+func (s *Server) screenPictureOf(scale float64, format string) api.ScreenPicture {
+	if scale == 0 {
+		scale = 0.5
+	}
+	if format == "" {
+		format = "png"
+	}
+	return api.ScreenPicture{Width: int(2880 * scale), Height: int(1800 * scale), Scale: scale, Format: format, DataBase64: screenPixelPNG}
+}
+
+func (s *Server) screenPicture(w http.ResponseWriter, r *http.Request) {
+	m := s.machine(w, r)
+	if m == nil {
+		return
+	}
+	s.mu.Lock()
+	s.ScreenAsked = r.URL.Query()
+	if m.State == api.StatePaused {
+		m.State = api.StateRunning // a paused machine is woken for it
+	}
+	s.mu.Unlock()
+	scale, _ := strconv.ParseFloat(r.URL.Query().Get("scale"), 64)
+	reply(w, 200, s.screenPictureOf(scale, r.URL.Query().Get("format")))
+}
+
+func (s *Server) screenActions(w http.ResponseWriter, r *http.Request) {
+	m := s.machine(w, r)
+	if m == nil {
+		return
+	}
+	var in api.ScreenActions
+	if !decode(w, r, &in, false) {
+		return
+	}
+	if len(in.Actions) == 0 || len(in.Actions) > 64 {
+		refuse(w, r, Refusal{Status: 400, Code: "invalid_request", Detail: "actions holds 1 to 64 actions"})
+		return
+	}
+	s.mu.Lock()
+	s.ScreenActions = in
+	if m.State == api.StatePaused {
+		m.State = api.StateRunning
+	}
+	s.mu.Unlock()
+	out := api.ScreenActionsDone{Done: len(in.Actions)}
+	if in.Picture {
+		scale := 0.0
+		if in.Scale != nil {
+			scale = *in.Scale
+		}
+		p := s.screenPictureOf(scale, "")
+		out.Picture = &p
+	}
+	reply(w, 200, out)
 }
 
 func (s *Server) exec(w http.ResponseWriter, r *http.Request) {

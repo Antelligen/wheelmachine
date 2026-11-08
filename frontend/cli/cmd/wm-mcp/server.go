@@ -54,12 +54,20 @@ const (
 const maxMessage = 64 << 20
 
 const instructions = "Wheelmachine machines on this account: make them, run commands in them, read and write their files, " +
-	"pause, start, stop, fork, back up and delete them. A machine is named by its id (m_...) or its name; file paths " +
+	"see and work their desktops, pause, start, stop, fork, back up and delete them. A machine is named by its id (m_...) or its name; file paths " +
 	"begin home/ (the machine's home) or work/ (where commands start). Running time is charged by the second while a " +
 	"machine runs: pause or stop machines that are not in use. A machine's commands get the account's secrets it was given " +
 	"as environment variables, so a command there can read them; these tools name secrets, and never take a value. Errors " +
 	"come back as results with " +
 	"isError and the API's code."
+
+// What a client is told: Deploy's words with its tools, once they are offered.
+func serverInstructions() string {
+	if deployListed {
+		return instructions + " " + deployInstructions
+	}
+	return instructions
+}
 
 type implementation struct {
 	Name    string `json:"name"`
@@ -124,7 +132,7 @@ type server struct {
 }
 
 func newServer(logger *log.Logger, connect func() (*api.Client, error)) *server {
-	s := &server{tools: tools(), connect: connect, log: logger, grace: 30 * time.Second, running: map[string]*running{},
+	s := &server{tools: offered(), connect: connect, log: logger, grace: 30 * time.Second, running: map[string]*running{},
 		info: implementation{Name: "wheelmachine", Title: "Wheelmachine", Version: api.Version}, calls: make(chan struct{}, 16)}
 	s.byName = make(map[string]*tool, len(s.tools))
 	for i := range s.tools {
@@ -344,7 +352,7 @@ func (s *server) initialize(params json.RawMessage) (any, *rpcError) {
 		"protocolVersion": version,
 		"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 		"serverInfo":      s.info,
-		"instructions":    instructions,
+		"instructions":    serverInstructions(),
 	}, nil
 }
 
@@ -376,7 +384,7 @@ func (s *server) request(ctx context.Context, method string, params json.RawMess
 		out = map[string]any{}
 	case "server/discover":
 		out = map[string]any{"supportedVersions": supportedVersions(), "capabilities": map[string]any{"tools": map[string]any{"listChanged": false}},
-			"instructions": instructions, "ttlMs": 3600000, "cacheScope": "public"}
+			"instructions": serverInstructions(), "ttlMs": 3600000, "cacheScope": "public"}
 	case "tools/list":
 		out = map[string]any{"tools": s.tools}
 		if e.modern {
@@ -478,6 +486,9 @@ func (s *server) call(ctx context.Context, params json.RawMessage) (map[string]a
 		return errorResult(err), nil
 	}
 	s.log.Printf("%s: done in %s", t.Name, took)
+	if p, ok := value.(*pictured); ok {
+		return map[string]any{"content": []any{p.image, text(compact(p.said))}, "isError": false}, nil
+	}
 	return map[string]any{"content": []any{text(compact(value))}, "isError": false}, nil
 }
 
@@ -502,10 +513,12 @@ func (s *server) apiClient() (*api.Client, error) {
 	return c, nil
 }
 
-// content is a block of a tool's result.
+// content is a block of a tool's result: words, or a picture and its type.
 type content struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 func text(s string) content { return content{Type: "text", Text: s} }

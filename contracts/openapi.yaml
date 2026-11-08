@@ -1568,6 +1568,10 @@ paths:
         There is no password or bare public-key login. `wm ssh-config` prints the matching
         `~/.ssh/config` block. A certificate works only while the key or the sign-in that asked for it does: revoking
         that key, or signing out, ends the SSH sessions it opened, and it opens no more.
+
+        A person has at most 16 SSH sessions, and 16 SSH connections, open at once across all of theirs, as does a person's own
+        account, and an organisation 64 of each: past that, a new one is refused, in words your SSH client prints, until one is
+        closed. A connection that opens no session is closed after a short while.
       requestBody:
         required: true
         content:
@@ -2413,6 +2417,15 @@ paths:
       description: |
         Needs the `cloud:machines:exec` scope. A paused machine is woken for it. Commands run as the machine's user
         unless `root` is asked for; root is inside the machine only, and its `HOME` is root's own.
+
+        If you stop waiting, or your connection drops, the command goes on in the machine. What it writes from then on is
+        thrown away, and after about 10 minutes it has nowhere left to write, which ends most programs that still write.
+
+        Read a long answer as it comes: one left unread, or read too slowly, is cut off. A person may have 320 MiB of long
+        answers waiting to be read across all of theirs, as may a person's own account, and an organisation 640 MiB. With
+        little of that left, your next command is answered `429` (`rate_limited`) and does not run, however little it would
+        write; with none of yours waiting, it never is. When a command's long output cannot be brought back, it comes back
+        without it: `exit_code` as ever, `stdout` and `stderr` empty, and `truncated` true.
       requestBody:
         required: true
         content:
@@ -2432,12 +2445,18 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
           description: "The machine cannot run a command in the state it is in; or its internet policy cannot be applied just now (`not_open`)"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+          description: "The command, its environment and the machine's secrets are more than 1 MiB together"
         "429":
           $ref: "#/components/responses/TooManyRequests"
-          description: "Too many calls just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first"
+          description: "Too many calls just now, or too many of your long answers, or your organisation's, are waiting to be read (`rate_limited`); or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first"
+        "502":
+          $ref: "#/components/responses/Unavailable"
+          description: "The command's result did not come back: it may or may not have run, so check before running it again (no `Retry-After`)"
         "503":
           $ref: "#/components/responses/Unavailable"
-          description: "The command's result did not come back: it may or may not have run, so check before running it again"
+          description: "Nothing could run it just now. With `not_run` it never reached its machine, and is safe to send again after `retry_after_s`"
         "504":
           $ref: "#/components/responses/Timeout"
           description: "The command ran longer than 10 minutes; it may still be running in the machine"
@@ -2463,13 +2482,17 @@ paths:
         "message":...}` when it did not end by itself) says how it ended, just before the socket closes.
 
         Ask for the protocol `wm.terminal` to be told over the socket why a terminal could not open: one text message
-        `{"reason": <the code>, "status": <the status>, "message": ...}`, then a close with code 4000 and that status (4501: not
-        available). Without it, the error is an ordinary HTTP answer.
+        `{"reason": <the code>, "status": <the status>, "message": ...}` (and `retry_after_s`, when trying again later can help),
+        then a close with code 4000 and that status (4501: not available). Without it, the error is an ordinary HTTP answer.
 
         A terminal ends when the sign-in or key it was opened with ends, or the account can no longer spend, within half a
         minute, with one text message as above (4401 signed out or the key revoked, 4403 the account on hold, 4402 it cannot
         spend; in an organisation also 4403 when your role, teams or limits change or you are taken out, 4404 when you no longer
         reach the machine, 4409 when it moves to another project), then a close with code 4000 and that status.
+
+        A person has at most 64 terminals open at once across all of theirs, as does a person's own account, and an
+        organisation 256: past that, this answers 429 (`limit_reached`, with `retry_after_s`) until one is closed. One whose
+        connection was lost counts for up to a minute.
 
         We never log what is typed or shown. The audit records only that a terminal opened and closed.
       parameters:
@@ -2501,7 +2524,7 @@ paths:
         "426": { $ref: "#/components/responses/BadRequest" }
         "429":
           $ref: "#/components/responses/TooManyRequests"
-          description: "Too many calls just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first"
+          description: "Too many calls just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first. Or this person or account already has as many terminals open as it may (`limit_reached`, with `retry_after_s`): close one first"
         "501": { $ref: "#/components/responses/NotImplemented" }
 
   /v1/machines/{machine_id}/screen:
@@ -2522,11 +2545,13 @@ paths:
         team's managers - whose `access` to it is `watch` - are given a screen they only watch: the same desktop,
         which takes no key, no pointer, no clipboard and no new size, and never gives them the clipboard. Nothing is
         woken or turned on for them: a machine that is not running answers 409 (it is watched while it runs), one whose
-        desktop is off 409, and one that cannot be watched yet 409 until it next starts.
+        desktop is off 409, and one that cannot be watched yet 409 until it next starts. A screen they watch ends (4503) soon
+        after its machine stops running.
 
         Over the socket, **binary** messages carry the screen's own stream both ways - RFB (RFC 6143), the protocol
         VNC viewers speak - so any viewer that speaks it over a WebSocket shows the desktop, whose size is fixed, and
-        works it: keyboard, pointer and the clipboard. Text messages you send are not passed
+        works it: keyboard, pointer and the clipboard. It is a stream: where one message ends says nothing, and what the
+        desktop sent may come cut or joined. Text messages you send are not passed
         on. A final **text** message `{"reason": ..., "status": ..., "message": ...}` says why the screen ended when it
         did not end by itself, just before the socket closes; the desktop closing it is a plain close (1000).
 
@@ -2537,7 +2562,8 @@ paths:
         machine has no desktop, `no_apps` when it has no apps).
 
         A screen ends as a terminal does, with the same codes, and after a day at most (4408). One message carries at most 4
-        MiB from you.
+        MiB from you. A person has at most 8 screens open at once across all of theirs, as does a person's own account, and an
+        organisation 32: past that, this answers 429 (`limit_reached`) until one is closed.
 
         We never log what is shown or typed. The audit records only that a screen opened and closed.
       responses:
@@ -2552,7 +2578,7 @@ paths:
         "426": { $ref: "#/components/responses/BadRequest" }
         "429":
           $ref: "#/components/responses/TooManyRequests"
-          description: "Too many calls just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first"
+          description: "Too many calls just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first. Or this person or account already has as many screens open as it may (`limit_reached`): close one first"
         "502":
           $ref: "#/components/responses/Unreadable"
           description: "The machine's answer about its apps could not be read, or its desktop did not answer as a screen does (`unavailable`); try again in a moment"
@@ -2560,6 +2586,159 @@ paths:
         "504":
           $ref: "#/components/responses/Timeout"
           description: "The machine's desktop did not answer in time; it may still be starting"
+
+  /v1/machines/{machine_id}/screen/picture:
+    parameters:
+      - $ref: "#/components/parameters/MachineId"
+    get:
+      tags: [Files and commands]
+      operationId: takeScreenPicture
+      summary: See the machine's desktop as a picture
+      description: |
+        Needs the `cloud:machines:exec` scope, as its screen does (`openScreen`). A paused machine is woken for it, and runs and
+        is charged as for a command. Its `desktop` app is turned on when it is not running, with no port opened and no link
+        made: the first start can take up to a minute. Ask for `desktop` when you make a machine to have it ready.
+
+        The desktop is a Linux desktop of 2880 x 1800 pixels. `scale` draws the picture down: 1, or one over a whole number up to
+        8, each of its pixels the average of a square of the desktop's. The default, 0.5, answers exactly 1440 x 900.
+        `x`, `y`, `w` and `h` ask for a part of the screen, in pixels of a picture at this `scale`; a part that runs past the
+        screen's edge is cut there, and the answer's `width` and `height` say what you got.
+
+        In an organisation, only the person who holds the machine has it woken or its desktop turned on. Its owners and admins
+        and its team's managers - whose `access` to it is `watch` - see the screen they watch: nothing is woken or turned on for
+        them, a machine that is not running answers 409, and one whose desktop is off 409.
+
+        **A picture shows whatever is on the screen**, passwords and private pages among it, and it goes wherever your program
+        sends it: an agent passes it on to whichever model provider it uses. Close what it should not see first. We never log or
+        keep a picture. The audit records that one was taken (`screen.open`, `screen.watch`), never what it showed.
+
+        A call has 30 seconds with the desktop, after any wait for it to wake and start. A key and a person's own account have at most
+        4 calls on screens going at once, an organisation 16 and a person 8 across all of theirs; when many pictures are being
+        taken at once a call may be asked to come back. A screen past 64 million pixels, or 8192 pixels a side, has no pictures.
+      parameters:
+        - name: scale
+          in: query
+          description: 1, or one over a whole number up to 8, such as 0.5 or 0.25. Near enough is taken, so 0.33 is a third.
+          schema: { type: number, minimum: 0.125, maximum: 1, default: 0.5 }
+        - name: format
+          in: query
+          description: "`png` is exact, and what to read small text and work out a click from; `jpeg` is smaller for a screen of photographs."
+          schema: { type: string, enum: [png, jpeg], default: png }
+        - name: x
+          in: query
+          description: Where the part begins, in pixels of a picture at this scale.
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: y
+          in: query
+          description: Where the part begins, in pixels of a picture at this scale.
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: w
+          in: query
+          description: The part's width, in pixels of a picture at this scale; to the screen's edge when left out.
+          schema: { type: integer, minimum: 1 }
+        - name: h
+          in: query
+          description: The part's height, in pixels of a picture at this scale; to the screen's edge when left out.
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: The picture
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScreenPicture" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "The machine has no apps (`no_apps`), it has no desktop, its desktop did not turn on, or it cannot be reached in the state it is in"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+          description: "The picture comes to more than 16 MiB: ask for a smaller `scale`, a part of the screen, or `jpeg`"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+          description: "Too many calls or pictures just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first"
+        "502":
+          $ref: "#/components/responses/Unreadable"
+          description: "The machine's answer about its apps could not be read, or its desktop did not answer as a screen does, or its screen is larger than a picture may be (`unavailable`)"
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504":
+          $ref: "#/components/responses/Timeout"
+          description: "The machine's desktop did not answer in time; it may still be starting"
+
+  /v1/machines/{machine_id}/screen/actions:
+    parameters:
+      - $ref: "#/components/parameters/MachineId"
+    post:
+      tags: [Files and commands]
+      operationId: workScreen
+      summary: "Work the machine's desktop: click, drag, scroll, press keys, type, wait"
+      description: |
+        Needs the `cloud:machines:exec` scope. Only the person who holds the machine works it: someone whose `access` to it is
+        `watch` is refused (`forbidden`), and gets pictures alone. A paused machine is woken for it, and its `desktop` app turned on,
+        as for a picture.
+
+        The actions run in order, and all are checked before the first. `x` and `y` are pixels of a picture of the whole screen
+        at this `scale`, so a place read off a picture is the place to click: at scale 1 that very pixel, at the default 0.5
+        within one pixel of it. A part of the screen you asked for begins at its own `x` and `y`: add them.
+
+        A `click` takes `x`, `y`, and if you wish `button` (`left`, `middle` or `right`) and `count` (2 for a double click). A
+        `move` takes `x`, `y`. A `drag` goes from `x`, `y` to `to_x`, `to_y`, holding `button`. A `scroll` turns at `x`, `y`, by `dy`
+        notches (above 0 is down) and `dx` notches (above 0 is right). `wait` takes `ms`, at most 10000.
+
+        `keys` are pressed together, in that order, such as `["ctrl", "c"]`. A key is a character, or one of: enter, tab,
+        escape, backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, ctrl, shift, alt, super,
+        menu, capslock, printscreen, f1 to f12.
+
+        `type` types its `text` one key after another, at most 4096 characters a call. Letters of every language and emoji go, and
+        a line's end is the Enter key. Characters that aren't on an English keyboard, such as accents, Russian, Chinese or emoji, go about
+        60 a second and can come out wrong. Take a picture after typing them to check; a password box can't be checked this way.
+
+        What you type may be a password: it is never logged, kept or said back, and the audit counts the actions of each kind
+        (`screen.open`) and nothing of what they held. With `picture`, a picture of the whole screen comes back as PNG once the
+        screen has had `settle_ms` to catch up. Each action changes what the machine's person sees, and goes on from where they
+        left it.
+
+        A call has 30 seconds with the desktop, its waits and the time its text takes to type among them at no more than 25
+        seconds, and counts among the calls on screens (`takeScreenPicture`). A 429 or a 503 says nothing was done, and room for the
+        picture you asked for is found before the first action. Once anything has reached the desktop, an answer never asks you to
+        try again and carries no `Retry-After`: its `detail` says how many actions were done in full, and the one after them may
+        have been begun. A click or a word must not happen twice, so look at the screen before you send it again. The libraries,
+        `wm` and the tools never send this call again by themselves once it may have reached the API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScreenActions" }
+      responses:
+        "200":
+          description: Every action was done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScreenActionsDone" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "The machine has no apps (`no_apps`), it has no desktop, its desktop did not turn on, or it cannot be reached in the state it is in"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+          description: "The picture comes to more than 16 MiB; the actions were done"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+          description: "Too many calls or pictures just now (`rate_limited`), or waking the machine would run more CPUs at once than its account, or the person who holds it, may (`limit_reached`): pause or stop another first. Nothing was done."
+        "502":
+          $ref: "#/components/responses/Unreadable"
+          description: "The machine's answer about its apps could not be read, or its desktop did not answer as a screen does (`unavailable`). When any action had begun, `detail` says how many were done in full"
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504":
+          $ref: "#/components/responses/Timeout"
+          description: "The machine's desktop did not answer in time; it may still be starting. When any action had begun, `detail` says how many were done in full"
 
   /v1/machines/{machine_id}/files:
     parameters:
@@ -2657,8 +2836,8 @@ paths:
       summary: What a folder holds
       description: |
         Needs the `cloud:machines:exec` scope. Its own entries, folders first and then by name, each with its kind, its
-        size and when it last changed; at most 1,000, and `truncated` says when there were more. A paused machine is
-        woken for it.
+        size and when it last changed; at most 1,000 of them and 1 MiB in all, and `truncated` says when there were more.
+        A paused machine is woken for it.
       responses:
         "200":
           description: The folder
@@ -5260,8 +5439,11 @@ paths:
         the API's calls it made. A call is not tried again, and carries no `Idempotency-Key`: a temporary error comes
         back at once, with `retry_after_s`. A message is at most 8 MiB, and a message or an answer that moves too slowly
         is cut off. A key has at most 16 calls going at once, a person's own account 16, an organisation 32 and a person
-        32 across all of theirs. At most 128 messages or answers of over 64 KiB move at once across everyone's calls:
-        over that, a long message is answered `429`; a shorter call never is, and an answer is never refused.
+        32 across all of theirs. At most 128 messages of over 64 KiB come in at once across everyone's calls, and past 64 of
+        them only from someone with none coming already: over that, a long message is answered `429`, and this limit never
+        refuses a shorter call or an answer. With too many of your long answers waiting to be read, `run_command` and
+        `read_file` answer `rate_limited`, having done nothing; when a long one cannot be brought back, `read_file` says
+        the same, and `run_command` gives its `exit_code` with its output left out.
       security:
         - key: []
       parameters:
@@ -5607,6 +5789,9 @@ components:
                  too_large, not_open, no_apps, internal, login_denied, login_expired, confirm_required, confirm_wrong]
         request_id: { type: string }
         retry_after_s: { type: number }
+        not_run:
+          type: boolean
+          description: "True when a command is known never to have reached its machine, so that it is safe to send again. Without it, a command that failed may have run."
         limit:
           $ref: "#/components/schemas/LimitHit"
           description: The limit that stopped it, where one did - with `payment_required`, `limit_reached` or `forbidden`.
@@ -6711,8 +6896,14 @@ components:
           type: string
           description: |
             One of its team's machine types, by id or name: it is made as the type says, so `cpus`, `gpu`, `network`,
-            `sleep_when_idle`, `idle_after_s` and `put_away_after_s` are refused beside it. In a team whose `types_only`
-            rule is on, its members and managers make machines from its types alone.
+            `sleep_when_idle`, `idle_after_s`, `put_away_after_s` and `desktop` are refused beside it. In a team whose
+            `types_only` rule is on, its members and managers make machines from its types alone.
+        desktop:
+          type: boolean
+          default: false
+          description: |
+            Turn its desktop on behind the answer, so that its screen is ready for a first picture. The desktop is off
+            otherwise, and turns on when its screen or a picture first asks for it, which can take up to a minute.
         wait_s: { type: number, minimum: 0, maximum: 600, default: 60, description: "How long to wait for it to be running, in seconds; past that the answer is `202`." }
     MachineUpdate:
       type: object
@@ -6764,9 +6955,9 @@ components:
           description: |
             For `allowed` only (empty or left out otherwise). Each entry is a domain name for HTTP and HTTPS - exact
             (`api.github.com`) or a single leading `*.` for every name under it (`*.githubusercontent.com`) - or an
-            IPv4/IPv6 range as a CIDR (`140.82.112.0/20`) for any other port. HTTP and HTTPS reach only the listed
-            names (a connection that names no host, or an unlisted one, is
-            refused); other ports reach only the listed ranges.
+            IPv4/IPv6 range as a CIDR (`140.82.112.0/20`) for any other port. HTTP and HTTPS reach only the addresses
+            the listed names have (a connection that begins by naming no host, or an unlisted one, is refused); other
+            sites at those addresses can still answer. Other ports reach only the listed ranges.
           items: { type: string, maxLength: 253 }
     SecretNames:
       type: array
@@ -7362,7 +7553,7 @@ components:
         entries:
           type: array
           items: { $ref: "#/components/schemas/FolderEntry" }
-        truncated: { type: boolean, description: "True when it holds more than 1,000 and the list was cut there." }
+        truncated: { type: boolean, description: "True when it holds more than 1,000, or more than a list of 1 MiB can carry, and the list was cut there." }
     FolderEntry:
       type: object
       required: [name, type, size, modified_at]
@@ -7435,7 +7626,63 @@ components:
         stdout_base64: { type: string }
         stderr: { type: string }
         duration_ms: { type: number }
-        truncated: { type: boolean, description: "True when the output was longer than 8 MiB and was cut there." }
+        truncated: { type: boolean, description: "True when the output was cut: past 8 MiB of a stream, or as little as 5 MiB of one that is mostly <, >, & or control characters. Or when its long output could not be brought back and was left out." }
+
+    ScreenPicture:
+      type: object
+      required: [width, height, scale, format, data_base64]
+      properties:
+        width: { type: integer, description: "Its width in pixels." }
+        height: { type: integer, description: "Its height in pixels." }
+        scale: { type: number, description: "How far it was drawn down: one pixel of it is 1/scale of the desktop's, each way." }
+        format: { type: string, enum: [png, jpeg] }
+        data_base64: { type: string, description: "The picture's file, as base64." }
+    ScreenAction:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [click, move, drag, scroll, keys, type, wait] }
+        x: { type: integer, minimum: 0 }
+        y: { type: integer, minimum: 0 }
+        to_x: { type: integer, minimum: 0, description: "For a drag: where it ends." }
+        to_y: { type: integer, minimum: 0, description: "For a drag: where it ends." }
+        button: { type: string, enum: [left, middle, right], default: left }
+        count: { type: integer, minimum: 1, maximum: 3, default: 1, description: "For a click: 2 for a double click." }
+        dx: { type: integer, minimum: -100, maximum: 100, description: "For a scroll: notches to the right, or to the left below 0." }
+        dy: { type: integer, minimum: -100, maximum: 100, description: "For a scroll: notches down, or up below 0." }
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { type: string }
+          description: "For keys: those pressed together."
+        text: { type: string, description: "For type: what is typed. Never kept or logged." }
+        ms: { type: integer, minimum: 0, maximum: 10000, description: "For wait: how long." }
+    ScreenActions:
+      type: object
+      additionalProperties: false
+      required: [actions]
+      properties:
+        actions:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { $ref: "#/components/schemas/ScreenAction" }
+        scale:
+          type: number
+          minimum: 0.125
+          maximum: 1
+          default: 0.5
+          description: "The scale the places are given at, and the picture's: 1, or one over a whole number up to 8."
+        picture: { type: boolean, default: false, description: "Answer with a picture of the whole screen once the actions are done." }
+        settle_ms: { type: integer, minimum: 0, maximum: 10000, default: 500, description: "How long to wait before the picture, so that the screen has caught up. With no `picture`, nothing waits for it." }
+    ScreenActionsDone:
+      type: object
+      required: [done]
+      properties:
+        done: { type: integer, description: "How many of the actions were done: all of them." }
+        picture: { $ref: "#/components/schemas/ScreenPicture" }
 
     Port:
       type: object
@@ -8442,7 +8689,7 @@ components:
             name: { type: string }
         state: { type: string, enum: [pending, approved, denied, done] }
         address: { type: string, description: "The IP address the program asked from: compare it with where you are." }
-        device: { type: string, examples: ["wm 0.1.2 on Linux"] }
+        device: { type: string, examples: ["wm 0.1.4 on Linux"] }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
 

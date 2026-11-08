@@ -37,6 +37,9 @@ func main() {
 			return
 		case "help", "h":
 			fmt.Print(help)
+			if deployListed {
+				fmt.Print("\nA folder is sent only from inside the folder it was started in, or those " + envDeployRoots + " names.\n")
+			}
 			return
 		}
 		fmt.Fprintf(os.Stderr, "wm-mcp: it takes no %q; see wm-mcp -h\n", arg)

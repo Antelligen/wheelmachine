@@ -36,6 +36,12 @@ var machineCommands = map[string]subcommand{
 	"rename":    (*app).machinesRename,
 	"secrets":   (*app).machinesSecrets,
 	"network":   (*app).machinesNetwork,
+	// its desktop, for a program as for a person (screen.go)
+	"screenshot": (*app).machinesScreenshot,
+	"click":      (*app).machinesClick,
+	"type":       (*app).machinesType,
+	"keys":       (*app).machinesKeys,
+	"scroll":     (*app).machinesScroll,
 }
 
 // labelFlag gathers key=value flags.
@@ -227,7 +233,8 @@ func (a *app) machinesCreate(ctx context.Context, args []string) error {
 		"(1m to 24h; 5m when left out)")
 	putAway := fs.Duration("put-away", 0, "archive it once nobody has used it this long (1h to 720h)")
 	kind := fs.String("type", "", "make it as one of its team's machine types says, by name or id (wm machines types): not with "+
-		"--cpus, --gpu, --internet, --no-sleep, --idle-after or --put-away")
+		"--cpus, --gpu, --internet, --no-sleep, --idle-after, --put-away or --desktop")
+	desktop := fs.Bool("desktop", false, "turn its desktop on behind the answer, so that a first picture of it finds it ready")
 	w := waitFlags(fs)
 	words, err := parse(fs, args)
 	if err != nil {
@@ -253,8 +260,8 @@ func (a *app) machinesCreate(ctx context.Context, args []string) error {
 	if *putAway != 0 && (*putAway%time.Second != 0 || *putAway < time.Hour || *putAway > 720*time.Hour) {
 		return usagef("--put-away is whole seconds from 1h to 720h")
 	}
-	if *kind != "" && (*cpus != 0 || *gpu != "" || *internet != "" || len(allow) > 0 || *noSleep || *idleAfter != 0 || *putAway != 0) {
-		return usagef("a machine of a type is made as the type says: leave out --cpus, --gpu, --internet, --allow, --no-sleep, --idle-after and --put-away")
+	if *kind != "" && (*cpus != 0 || *gpu != "" || *internet != "" || len(allow) > 0 || *noSleep || *idleAfter != 0 || *putAway != 0 || *desktop) {
+		return usagef("a machine of a type is made as the type says: leave out --cpus, --gpu, --internet, --allow, --no-sleep, --idle-after, --put-away and --desktop")
 	}
 	for _, n := range secrets {
 		if !api.ValidSecretName(n) {
@@ -270,7 +277,7 @@ func (a *app) machinesCreate(ctx context.Context, args []string) error {
 		return err
 	}
 	deadline := time.Now().Add(*w.timeout)
-	mc := api.MachineCreate{Name: *name, Region: *region, GPU: *gpu, CPUs: *cpus, Secrets: secrets, Network: network, WaitS: w.waitS(), Type: *kind}
+	mc := api.MachineCreate{Name: *name, Region: *region, GPU: *gpu, CPUs: *cpus, Secrets: secrets, Network: network, WaitS: w.waitS(), Type: *kind, Desktop: *desktop}
 	if len(labels) > 0 {
 		mc.Labels = labels
 	}

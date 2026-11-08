@@ -221,7 +221,7 @@ func TestToolsList(t *testing.T) {
 			}
 		}
 		switch tl["name"] {
-		case "delete_machine", "stop_machine", "write_file", "run_command":
+		case "delete_machine", "stop_machine", "write_file", "run_command", "use_screen":
 			if ann["destructiveHint"] != true || ann["readOnlyHint"] != false {
 				t.Fatalf("%s is destructive: %v", tl["name"], ann)
 			}
@@ -235,6 +235,12 @@ func TestToolsList(t *testing.T) {
 				if fmt.Sprint(state["enum"]) != fmt.Sprint(api.ListedStates) || !strings.Contains(state["description"].(string), "failed lists the ones that never came up") {
 					t.Fatalf("list_machines' state: %v", state)
 				}
+			}
+		case "take_screenshot":
+			// it wakes a machine, charges for it and turns its desktop on, and what it shows goes to the model's provider: a client
+			// that lets through by itself what only reads must still ask
+			if ann["readOnlyHint"] != false || ann["destructiveHint"] != false {
+				t.Fatalf("%s does more than read: %v", tl["name"], ann)
 			}
 		case "create_machine", "fork_machine", "backup_machine", "turn_app_on", "open_app":
 			if ann["readOnlyHint"] != false || ann["destructiveHint"] != false || ann["idempotentHint"] != false {
@@ -257,7 +263,7 @@ func TestToolsList(t *testing.T) {
 	}
 	want := "list_machines create_machine get_machine run_command read_file write_file pause_machine start_machine stop_machine " +
 		"fork_machine backup_machine list_backups delete_machine list_gpus list_regions list_secrets give_secrets set_network list_apps " +
-		"turn_app_on turn_app_off show_app open_app whoami"
+		"turn_app_on turn_app_off show_app open_app take_screenshot use_screen whoami"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools %v", names)
 	}
@@ -386,7 +392,7 @@ func TestRequestsCarryingTheirOwnVersion(t *testing.T) {
 	}
 
 	res = ok(t, s.request(2, "tools/list", map[string]any{"_meta": modernMeta()}))
-	if res["resultType"] != "complete" || len(res["tools"].([]any)) != len(tools()) || res["cacheScope"] != "public" {
+	if res["resultType"] != "complete" || len(res["tools"].([]any)) != len(offered()) || res["cacheScope"] != "public" {
 		t.Fatalf("tools/list %v", res)
 	}
 	call := map[string]any{"name": "run_command", "arguments": map[string]any{"machine": "web", "command": []string{"uname"}}, "_meta": modernMeta()}
@@ -823,5 +829,63 @@ func TestListSecretsShowsTheAIKeysAndWhereTheyGo(t *testing.T) {
 	raw, _ := json.Marshal(got)
 	if strings.Contains(string(raw), value) {
 		t.Fatal("the key is in what list_secrets answered")
+	}
+}
+
+// An agent sees a machine's desktop as a real picture, an image block beside its words, and works it: as the hosted server's
+// tools do, the API's own words for what it refuses.
+func TestTheScreenTools(t *testing.T) {
+	fake := fakeapi.New(t)
+	fake.AddMachine("box", "running")
+	s := start(t, connectTo(fake))
+	s.initialize("2025-11-25")
+	res := ok(t, s.request(2, "tools/call", map[string]any{"name": "take_screenshot",
+		"arguments": map[string]any{"machine": "box", "scale": 0.25, "format": "jpeg", "region": map[string]any{"x": 1, "y": 2, "w": 30, "h": 40}}}))
+	blocks := res["content"].([]any)
+	if len(blocks) != 2 || res["isError"] != false {
+		t.Fatalf("a picture: %.300v", res)
+	}
+	image, words := blocks[0].(map[string]any), blocks[1].(map[string]any)
+	if image["type"] != "image" || image["mimeType"] != "image/jpeg" || image["data"] == "" || image["text"] != nil {
+		t.Fatalf("its image block: %.300v", image)
+	}
+	if words["type"] != "text" || words["data"] != nil || words["text"] != `{"width":720,"height":450,"scale":0.25,"format":"jpeg"}` {
+		t.Fatalf("its words: %v", words)
+	}
+	if q := fake.ScreenAsked; q.Get("scale") != "0.25" || q.Get("format") != "jpeg" || q.Get("x") != "1" || q.Get("y") != "2" || q.Get("w") != "30" || q.Get("h") != "40" {
+		t.Fatalf("asked with %v", q)
+	}
+	res = ok(t, s.request(3, "tools/call", map[string]any{"name": "use_screen", "arguments": map[string]any{"machine": "box", "scale": 1, "then_screenshot": true,
+		"settle_ms": 100, "actions": []map[string]any{{"type": "click", "x": 3, "y": 4, "button": "right", "count": 2}, {"type": "keys", "keys": []string{"ctrl", "c"}}, {"type": "type", "text": "héllo"}}}}))
+	blocks = res["content"].([]any)
+	if len(blocks) != 2 || blocks[0].(map[string]any)["mimeType"] != "image/png" ||
+		blocks[1].(map[string]any)["text"] != `{"done":3,"width":2880,"height":1800,"scale":1,"format":"png"}` {
+		t.Fatalf("after working it: %.400v", res)
+	}
+	got := fake.ScreenActions
+	if !got.Picture || *got.Scale != 1 || *got.SettleMS != 100 || len(got.Actions) != 3 || *got.Actions[0].X != 3 || got.Actions[0].Button != "right" || *got.Actions[0].Count != 2 ||
+		got.Actions[1].Keys[1] != "c" || *got.Actions[2].Text != "héllo" {
+		t.Fatalf("it was sent %+v", got)
+	}
+	// with no picture, words alone
+	if isErr, body := s.tool(4, "use_screen", map[string]any{"machine": "box", "actions": []map[string]any{{"type": "wait", "ms": 1}}}); isErr || body["done"] != 1.0 {
+		t.Fatalf("no picture: %v", body)
+	}
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+		want string
+	}{
+		{"take_screenshot", map[string]any{}, "machine"},
+		{"take_screenshot", map[string]any{"machine": "box", "format": "gif"}, "format is png or jpeg"},
+		{"take_screenshot", map[string]any{"machine": "box", "colour": "red"}, "no argument"},
+		{"use_screen", map[string]any{"machine": "box"}, "1 to 64 actions"},
+		{"use_screen", map[string]any{"machine": "box", "actions": []map[string]any{{"type": "wait", "ms": "soon"}}}, "must be"},
+		{"use_screen", map[string]any{"machine": "box", "actions": []map[string]any{{"type": "wait", "colour": "red"}}}, "no argument"},
+	} {
+		isErr, body := s.tool(5, tc.tool, tc.args)
+		if !isErr || !strings.Contains(fmt.Sprint(body), tc.want) {
+			t.Errorf("%s %v: %v", tc.tool, tc.args, body)
+		}
 	}
 }
