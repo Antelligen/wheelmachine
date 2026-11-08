@@ -17,7 +17,7 @@ from ._http import Answer, Body, BytesBody, Failure, OpenBody, Proxy, Target, Tr
 from ._models import (Code, CodeConnection, CodeGrant, FolderEntry, FolderGrant, FolderList, FolderListing, FolderTrash, GpuList, Me, RateLimit,
                       Region, ResponseInfo, Usage, UsageLimits, _answered)
 from ._pagination import PageIterator
-from ._resources import (Agents, Apps, Audit, ConfirmCodes, Credit, FileData, Keys, Machines, Models, Orgs, Ports, Projects, Requests, Secrets,
+from ._resources import (Agents, Apps, Audit, ConfirmCodes, Credit, Deployments, FileData, Keys, Machines, Models, Orgs, Ports, Projects, Requests, Secrets,
                          _file_body)
 from ._version import __version__
 
@@ -104,6 +104,7 @@ class Wheelmachine:
 
     machines: Machines
     ports: Ports
+    deployments: Deployments
     apps: Apps
     projects: Projects
     keys: Keys
@@ -145,6 +146,7 @@ class Wheelmachine:
         self._jitter: Callable[[], float] = random.random
         self.machines = Machines(self)
         self.ports = Ports(self)
+        self.deployments = Deployments(self)
         self.apps = Apps(self)
         self.projects = Projects(self)
         self.keys = Keys(self)
@@ -342,6 +344,7 @@ class Wheelmachine:
         idempotency_key: Optional[str] = None,
         repeatable: bool = False,
         once: bool = False,
+        command: bool = False,
         timeout: Optional[float] = None,
         confirm_code: Optional[str] = None,
     ) -> Tuple[Any, ResponseInfo]:
@@ -358,6 +361,7 @@ class Wheelmachine:
             idempotency_key=idempotency_key,
             repeatable=repeatable,
             once=once,
+            command=command,
             timeout=timeout,
             confirm_code=confirm_code,
         )
@@ -381,6 +385,7 @@ class Wheelmachine:
         idempotency_key: Optional[str] = None,
         repeatable: bool = False,
         once: bool = False,
+        command: bool = False,
         timeout: Optional[float] = None,
         accept: str = "application/json",
         buffer: bool = True,
@@ -390,7 +395,9 @@ class Wheelmachine:
         `content` when `buffer`; raises the error for any other. `repeatable`: a POST that does the same however
         many times it is sent, so it is sent again as a PUT would be. `once`: a call that makes something new each
         time, shown once, so it is never sent again once it may have reached the API, not even when refused for a
-        moment; only when it could not go out at all."""
+        moment; only when it could not go out at all. `command`: a command run in a machine, which may have run
+        whatever its answer, unless the answer says it never reached its machine (`not_run`): a 503 is tried again
+        only then."""
         target = self._target.prefix + path
         if query:
             target += "?" + urlencode(list(query), quote_via=quote)
@@ -440,7 +447,7 @@ class Wheelmachine:
             # an answer came, so the call reached the API: one that makes something new each time is not sent again
             pause = None
             if not once:
-                pause = self._pause_before_retry(error, attempt, repeatable, idempotency_key, body, deadline)
+                pause = self._pause_before_retry(error, attempt, repeatable, idempotency_key, body, deadline, command)
             if pause is None:
                 raise error
             if error.status != 409:
@@ -455,6 +462,7 @@ class Wheelmachine:
         idempotency_key: Optional[str],
         body: Optional[Body],
         deadline: float,
+        command: bool = False,
     ) -> Optional[float]:
         """How long to wait before trying a refused call again, or None when it is not tried again."""
         if body is not None and not body.can_repeat():
@@ -482,6 +490,9 @@ class Wheelmachine:
             return None
         elif error.code == "not_open":
             # not open, not busy: waiting does not change it, whatever Retry-After says
+            return None
+        elif command and not (isinstance(error.body, dict) and error.body.get("not_run") is True):
+            # a command may have run: sent again only when the answer says it never reached its machine
             return None
         return after if after is not None else self._backoff(attempt)
 

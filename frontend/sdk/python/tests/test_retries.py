@@ -93,13 +93,41 @@ class Retries(APITest):
             self.client.machines.exec(m.id, ["sleep", "999"])
         self.assertEqual(len(self.api.requests("POST", "/exec$")), 1)
 
-    def test_an_exec_refused_with_503_is_tried_again(self) -> None:
+    def test_an_exec_refused_with_503_is_not_sent_again(self) -> None:
         m = self.client.machines.create()
-        self.api.fault("POST", "/exec$", status=503, code="unavailable", retry_after=1)
+        self.api.fault("POST", "/exec$", status=503, code="unavailable", retry_after=1, times=5)
+        with self.assertRaises(UnavailableError):
+            self.client.machines.exec(m.id, ["echo", "once"])
+        self.assertEqual(len(self.api.requests("POST", "/exec$")), 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_an_exec_whose_result_did_not_come_back_is_not_sent_again(self) -> None:
+        m = self.client.machines.create()
+        self.api.fault("POST", "/exec$", status=502, code="unavailable", times=5,
+                       detail="the command's result did not come back; it may or may not have run - check before running it again")
+        with self.assertRaises(UnavailableError) as caught:
+            self.client.machines.exec(m.id, ["echo", "once"])
+        self.assertEqual(caught.exception.status, 502)
+        self.assertEqual(len(self.api.requests("POST", "/exec$")), 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_an_exec_that_never_reached_its_machine_is_sent_again(self) -> None:
+        m = self.client.machines.create()
+        self.api.fault("POST", "/exec$", status=503, code="unavailable", retry_after=1, not_run=True)
         r = self.client.machines.exec(m.id, ["echo", "hi"])
         self.assertEqual(r.stdout, "hi\n")
         self.assertEqual(self.sleeps, [1.0])
         self.assertEqual(len(self.api.execs), 1)
+
+    def test_moving_a_machine_is_tried_again_after_a_503_as_before(self) -> None:
+        # (a command's rule is its own: the actions are tried again on a 503 as they were)
+        m = self.client.machines.create()
+        for route, move in (("start", self.client.machines.start), ("pause", self.client.machines.pause),
+                            ("stop", self.client.machines.stop)):
+            self.sleeps.clear()
+            self.api.fault("POST", "/" + route + "$", status=503, code="unavailable", retry_after=1)
+            move(m.id)
+            self.assertEqual(self.sleeps, [1.0], route)
 
     def test_a_read_that_lost_its_answer_is_tried_again(self) -> None:
         m = self.client.machines.create()

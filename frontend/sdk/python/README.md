@@ -102,7 +102,8 @@ its team, an owner or an admin: `machines.fork` answers it with the request, and
   `UnavailableError` (502, 503, 504), and `APIConnectionError` / `APITimeoutError` when no answer came.
 - **Retries.** A call refused for a moment (429, 503) is tried again after the API's `Retry-After`, or a backoff with
   full jitter; so is a call that lost its connection - but a command (`exec`), `start`, `pause` and the other
-  actions are not sent again once they went out, since they may have run. A call that creates something (a
+  actions are not sent again once they went out, since they may have run. A command refused with 503 is sent again
+  only when the answer says it never reached its machine (`not_run`). A call that creates something (a
   machine, fork, backup, project or key, a hand-off or an ask) carries an `Idempotency-Key`, the same on every retry, so a retry never
   makes two; pass your own with `idempotency_key=` to retry across restarts. A 503 `not_open` is something not
   open, not a temporary error: it is never tried again.
@@ -184,6 +185,35 @@ client.apps.turn_off(machine.id, "desktop")
 An app with a token of its own answers it once, in `token`, in the answer to `turn_on`. `link` and `token` are
 never in a repr. `turn_on` and `link` are never sent again once they may have reached the API; `turn_off` is. A machine
 with no apps answers `ConflictError` with the code `no_apps`.
+
+## Its desktop
+
+A program or an agent can see a machine's Linux desktop as a picture, and work it. The desktop is off until something asks for it,
+and its first start can take up to a minute: `desktop=True` as you make the machine has it ready. `x` and `y` are pixels of a
+picture of the whole screen at the same `scale` (0.5 by default: 1440 x 900 of the desktop's 2880 x 1800).
+
+```python
+machine = client.machines.create(desktop=True)
+picture = client.machines.screenshot(machine.id)
+print(picture.width, picture.height)  # 1440 900
+open("screen.png", "wb").write(picture.to_bytes())
+client.machines.click(machine.id, 720, 450)
+client.machines.type(machine.id, "hello")  # never kept or logged
+client.machines.keys(machine.id, "ctrl", "s")
+client.machines.scroll(machine.id, 720, 450, dy=3)
+done = client.machines.use_screen(machine.id, [{"type": "click", "x": 10, "y": 10}, {"type": "wait", "ms": 200}], picture=True)
+```
+
+A picture shows whatever is on the screen, and goes wherever your program sends it: an agent passes it on to whichever model
+provider it uses. Someone who only watches a machine gets pictures, and a `PermissionDeniedError` for actions.
+
+Characters that aren't on an English keyboard, such as accents, Russian, Chinese or emoji, can come out wrong. Take a picture after
+typing them to check; a password box can't be checked this way.
+
+`use_screen` and the calls made of it are never sent again by this library once they may have reached the API, not even when
+refused for a moment, since a click or a word must not happen twice. A `RateLimitError` or an `UnavailableError` says nothing was
+done, so that call is yours to send again. An error after anything reached the desktop never says to try again: its message says how many
+actions were done in full, and the one after them may have been begun, so look at the screen first.
 
 ## Terminals
 

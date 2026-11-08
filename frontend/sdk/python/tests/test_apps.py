@@ -7,7 +7,7 @@ import unittest
 from fake_api import APP_TOKEN
 from support import APITest
 
-from wheelmachine import App, BadRequestError, ConflictError, NotFoundError, UnavailableError
+from wheelmachine import App, BadRequestError, ConflictError, NotFoundError, UnavailableError, WheelmachineError
 
 
 class OnAMachine(APITest):
@@ -137,6 +137,76 @@ class Apps(OnAMachine):
         with self.assertRaises(ValueError):
             self.client.apps.list("")
         self.assertEqual(len(self.api.seen), before)
+
+
+class Screen(OnAMachine):
+    """A machine's desktop: a picture of it, and its pointer and keys."""
+
+    def test_a_picture_is_asked_for_as_it_is_said_and_read_back(self) -> None:
+        picture = self.client.machines.screenshot(self.machine, scale=0.25, format="jpeg", region={"x": 1, "y": 2, "w": 30, "h": 40})
+        seen = self.api.seen[-1]
+        self.assertEqual((seen.method, seen.path), ("GET", "/v1/machines/{}/screen/picture".format(self.machine)))
+        self.assertEqual(seen.query, {"scale": ["0.25"], "format": ["jpeg"], "x": ["1"], "y": ["2"], "w": ["30"], "h": ["40"]})
+        self.assertEqual((picture.width, picture.height, picture.scale, picture.format), (720, 450, 0.25, "jpeg"))
+        self.assertEqual(picture.to_bytes(), b"the picture's file")
+        self.assertEqual(self.client.machines.screenshot(self.machine).width, 1440)
+        self.assertEqual(self.api.seen[-1].query, {})
+
+    def test_each_way_to_work_a_desktop_says_what_it_should(self) -> None:
+        done = self.client.machines.use_screen(
+            self.machine, [{"type": "click", "x": 10, "y": 20}, {"type": "wait", "ms": 5}], scale=1, picture=True, settle_ms=100
+        )
+        self.assertEqual(done.done, 2)
+        assert done.picture is not None
+        self.assertEqual((done.picture.width, done.picture.height), (2880, 1800))
+        self.assertEqual(
+            self.api.screen_actions[-1],
+            {"actions": [{"type": "click", "x": 10, "y": 20}, {"type": "wait", "ms": 5}], "scale": 1, "picture": True, "settle_ms": 100},
+        )
+        self.assertEqual(self.client.machines.click(self.machine, 1, 2, button="right", count=2, scale=0.5).done, 1)
+        self.assertEqual(
+            self.api.screen_actions[-1],
+            {"actions": [{"type": "click", "x": 1, "y": 2, "button": "right", "count": 2}], "scale": 0.5},
+        )
+        self.assertIsNone(self.client.machines.type(self.machine, "héllo").picture)
+        self.assertEqual(self.api.screen_actions[-1], {"actions": [{"type": "type", "text": "héllo"}]})
+        self.client.machines.keys(self.machine, "ctrl", "s")
+        self.assertEqual(self.api.screen_actions[-1], {"actions": [{"type": "keys", "keys": ["ctrl", "s"]}]})
+        self.client.machines.scroll(self.machine, 5, 6, dy=-3)
+        self.assertEqual(self.api.screen_actions[-1], {"actions": [{"type": "scroll", "x": 5, "y": 6, "dy": -3}]})
+
+    def test_actions_are_never_sent_again_once_they_may_have_reached_the_api(self) -> None:
+        # a click or a word must not happen twice: not even for a refusal that says to try again
+        sent = 0
+        for status, code in ((429, "rate_limited"), (503, "unavailable"), (504, "timeout")):
+            self.api.fault("POST", "/screen/actions$", status=status, code=code, retry_after=1)
+            with self.assertRaises(WheelmachineError):
+                self.client.machines.type(self.machine, "pay")
+            sent += 1
+            self.assertEqual(len(self.api.requests("POST", "/screen/actions$")), sent)
+            self.assertEqual(self.sleeps, [])
+        # a picture is only asked for, and is
+        self.api.fault("GET", "/screen/picture$", status=429, code="rate_limited", retry_after=1)
+        self.assertEqual(self.client.machines.screenshot(self.machine).width, 1440)
+        self.assertEqual(self.sleeps, [1.0])
+
+    def test_a_picture_is_never_in_a_repr(self) -> None:
+        picture = self.client.machines.screenshot(self.machine)
+        self.assertNotIn(picture.data_base64, repr(picture))
+        self.assertNotIn("data_base64", repr(picture))
+        self.assertIn("1440", repr(picture))
+
+    def test_a_list_of_actions_is_a_list(self) -> None:
+        with self.assertRaises(TypeError):
+            self.client.machines.use_screen(self.machine, {"type": "wait", "ms": 1})
+        with self.assertRaises(BadRequestError):
+            self.client.machines.use_screen(self.machine, [])
+
+    def test_a_machine_can_be_made_with_its_desktop(self) -> None:
+        self.client.machines.create(desktop=True)
+        self.assertEqual(self.api.seen[-1].json(), {"desktop": True})
+        self.client.machines.create()
+        self.assertIsNone(self.api.seen[-1].json())
 
 
 if __name__ == "__main__":

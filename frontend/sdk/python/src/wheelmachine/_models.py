@@ -7,6 +7,7 @@ Times are the API's ISO 8601 strings in UTC, such as ``2026-10-23T07:00:00Z``.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Optional, TypeVar
 
@@ -50,6 +51,14 @@ __all__ = [
     "Outside",
     "HeaderRule",
     "SecretPreset",
+    "DeployBranch",
+    "DeployBranches",
+    "DeployGuess",
+    "DeployLog",
+    "DeployRepo",
+    "DeployRun",
+    "DeploySource",
+    "Deployment",
     "Port",
     "PortLink",
     "AppKind",
@@ -962,7 +971,9 @@ class ExecResult(APIObject):
     stderr: str
     duration_ms: float
     truncated: bool
-    """True when the output was longer than 8 MiB and was cut there."""
+    """True when the output was too long to come back whole: cut, past 8 MiB of a stream or as little as 5 MiB of one that
+    is mostly <, >, & or control characters, or left out when it could not be brought back. ``exit_code`` is the
+    command's either way."""
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "ExecResult":
@@ -977,6 +988,50 @@ class ExecResult(APIObject):
             ),
             d,
         )
+
+
+@dataclass
+class ScreenPicture(APIObject):
+    """A picture of a machine's desktop. It shows whatever was on the screen, so take care where it goes."""
+
+    width: int
+    height: int
+    scale: float
+    """How far it was drawn down: 0.5 is half the desktop's size each way."""
+    format: str
+    """``png`` or ``jpeg``."""
+    data_base64: str = field(repr=False)
+    """The picture's file, in base64: what is on the screen, and many megabytes of it, so never in a repr."""
+
+    def to_bytes(self) -> bytes:
+        """The picture's file."""
+        return base64.b64decode(self.data_base64)
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "ScreenPicture":
+        return _stamp(
+            cls(
+                width=_int(d, "width"),
+                height=_int(d, "height"),
+                scale=_float(d, "scale"),
+                format=_str(d, "format"),
+                data_base64=_str(d, "data_base64"),
+            ),
+            d,
+        )
+
+
+@dataclass
+class ScreenActionsDone(APIObject):
+    """How many actions on a machine's desktop were done, all of them, and the picture when one was asked for."""
+
+    done: int
+    picture: Optional[ScreenPicture]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "ScreenActionsDone":
+        picture = _opt_dict(d, "picture")
+        return _stamp(cls(done=_int(d, "done"), picture=ScreenPicture.from_dict(picture) if picture is not None else None), d)
 
 
 @dataclass
@@ -1329,6 +1384,236 @@ class AgentList(APIObject):
     def from_dict(cls, d: Mapping[str, Any]) -> "AgentList":
         return _stamp(cls(data=[Agent.from_dict(a) for a in _list(d, "data")], every_agent=_opt_dict(d, "every_agent"),
                           allowed=_opt(d, "allowed", AllowedModels.from_dict)), d)
+
+
+@dataclass
+class DeploySource(APIObject):
+    """Where a deployment's code comes from."""
+
+    kind: str
+    """``repo``, a repository of a connection; ``url``, a public repository's address; ``upload``, files sent."""
+    provider: Optional[str]
+    connection: Optional[str]
+    host: Optional[str]
+    repo: Optional[str]
+    url: Optional[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeploySource":
+        return _stamp(
+            cls(
+                kind=_str(d, "kind"),
+                provider=_opt_str(d, "provider"),
+                connection=_opt_str(d, "connection"),
+                host=_opt_str(d, "host"),
+                repo=_opt_str(d, "repo"),
+                url=_opt_str(d, "url"),
+            ),
+            d,
+        )
+
+
+@dataclass
+class DeployRun(APIObject):
+    """One go at putting a version on a deployment's machine."""
+
+    id: str
+    why: str
+    state: str
+    """``queued``, ``working``, ``live``, ``failed`` or ``cancelled``."""
+    step: str
+    progress: int
+    note: Optional[str]
+    failure: Optional[str]
+    commit: Optional[str]
+    branch: Optional[str]
+    files: Optional[int]
+    created_at: str
+    started_at: Optional[str]
+    ended_at: Optional[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployRun":
+        return _stamp(
+            cls(
+                id=_str(d, "id"),
+                why=_str(d, "why"),
+                state=_str(d, "state"),
+                step=_str(d, "step"),
+                progress=_int(d, "progress"),
+                note=_opt_str(d, "note"),
+                failure=_opt_str(d, "failure"),
+                commit=_opt_str(d, "commit"),
+                branch=_opt_str(d, "branch"),
+                files=_opt_int(d, "files"),
+                created_at=_str(d, "created_at"),
+                started_at=_opt_str(d, "started_at"),
+                ended_at=_opt_str(d, "ended_at"),
+            ),
+            d,
+        )
+
+
+@dataclass
+class Deployment(APIObject):
+    """An app on a machine of its own, at a public address, with its current or last run."""
+
+    id: str
+    name: str
+    project: str
+    held_by: Optional[HeldBy]
+    kind: str
+    source: DeploySource
+    branch: Optional[str]
+    commit: Optional[str]
+    build: Optional[str]
+    """What builds it; None unless you use its machine, with a key that holds ``cloud:machines:exec``."""
+    start: Optional[str]
+    """What starts it; None unless you use its machine, with a key that holds ``cloud:machines:exec``."""
+    port: int
+    cpus: Optional[int]
+    type: Optional[str]
+    region: Optional[str]
+    keep_awake: bool
+    secrets: List[str]
+    machine: Optional[str]
+    url: Optional[str]
+    """Its public address, once it has been live."""
+    state: str
+    """``building``, ``waiting_for_files``, ``live``, ``not_answering`` or ``failed``; ``run.failure`` says why."""
+    last_status: Optional[int]
+    run: Optional[DeployRun]
+    created_at: str
+    updated_at: str
+    live_at: Optional[str]
+    left_out: List[str] = field(default_factory=list)
+    """What ``send_folder`` did not send, by its path in the folder."""
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "Deployment":
+        return _stamp(
+            cls(
+                id=_str(d, "id"),
+                name=_str(d, "name"),
+                project=_str(d, "project"),
+                held_by=_opt(d, "held_by", HeldBy.from_dict),
+                kind=_str(d, "kind"),
+                source=DeploySource.from_dict(_opt_dict(d, "source") or {}),
+                branch=_opt_str(d, "branch"),
+                commit=_opt_str(d, "commit"),
+                build=_opt_str(d, "build"),
+                start=_opt_str(d, "start"),
+                port=_int(d, "port"),
+                cpus=_opt_int(d, "cpus"),
+                type=_opt_str(d, "type"),
+                region=_opt_str(d, "region"),
+                keep_awake=_bool(d, "keep_awake"),
+                secrets=_strs(d, "secrets"),
+                machine=_opt_str(d, "machine"),
+                url=_opt_str(d, "url"),
+                state=_str(d, "state"),
+                last_status=_opt_int(d, "last_status"),
+                run=_opt(d, "run", DeployRun.from_dict),
+                created_at=_str(d, "created_at"),
+                updated_at=_str(d, "updated_at"),
+                live_at=_opt_str(d, "live_at"),
+            ),
+            d,
+        )
+
+
+@dataclass
+class FolderFiles:
+    """What ``send_folder()`` would send of a folder: its files by their paths in it, how many bytes they come to, and what
+    it would leave out. Asked of nothing but the folder."""
+
+    files: List[str]
+    bytes: int
+    left_out: List[str]
+
+
+@dataclass
+class DeployGuess(APIObject):
+    """How code most likely builds and starts, to change as needed."""
+
+    runtime: str
+    build: str
+    start: str
+    port: int
+    note: Optional[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployGuess":
+        return _stamp(
+            cls(runtime=_str(d, "runtime"), build=_str(d, "build"), start=_str(d, "start"), port=_int(d, "port"), note=_opt_str(d, "note")),
+            d,
+        )
+
+
+@dataclass
+class DeployRepo(APIObject):
+    """A repository that can be deployed into a team."""
+
+    connection: str
+    provider: str
+    host: str
+    repo: str
+    shared: bool
+    """Given to the team already; False: deploying it gives it to the team to read first."""
+    updated_at: Optional[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployRepo":
+        return _stamp(
+            cls(
+                connection=_str(d, "connection"),
+                provider=_str(d, "provider"),
+                host=_str(d, "host"),
+                repo=_str(d, "repo"),
+                shared=_bool(d, "shared"),
+                updated_at=_opt_str(d, "updated_at"),
+            ),
+            d,
+        )
+
+
+@dataclass
+class DeployBranch(APIObject):
+    name: str
+    commit: str
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployBranch":
+        return _stamp(cls(name=_str(d, "name"), commit=_str(d, "commit")), d)
+
+
+@dataclass
+class DeployBranches(APIObject):
+    """A repository's branches, and which is its default."""
+
+    data: List[DeployBranch]
+    default: Optional[str]
+    known: bool
+    """False for a public repository on a host none are read of: type the branch."""
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployBranches":
+        return _stamp(cls(data=[DeployBranch.from_dict(b) for b in _list(d, "data")], default=_opt_str(d, "default"), known=_bool(d, "known")), d)
+
+
+@dataclass
+class DeployLog(APIObject):
+    """A deployment's log: a run's own (``build``), or the end of what the app itself writes (``app``)."""
+
+    kind: str
+    run: Optional[str]
+    text: str
+    done: bool
+    """With ``build``, the run has ended; with ``app``, the app is not running."""
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "DeployLog":
+        return _stamp(cls(kind=_str(d, "kind"), run=_opt_str(d, "run"), text=_str(d, "text"), done=_bool(d, "done")), d)
 
 
 @dataclass

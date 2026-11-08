@@ -16,6 +16,7 @@ import math
 import re
 import secrets
 import socket
+import tarfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -142,6 +143,7 @@ class Fault:
         delay: float = 0.0,
         raw: Optional[Tuple[str, bytes]] = None,
         times: int = 1,
+        not_run: bool = False,
     ) -> None:
         self.method = method
         self.pattern = re.compile(path)
@@ -153,12 +155,14 @@ class Fault:
         self.delay = delay
         self.raw = raw
         self.times = times
+        self.not_run = not_run
 
 
 class Problem(Exception):
     def __init__(self, status: int, code: str, detail: str, retry_after: Optional[float] = None,
-                 confirm: Optional[Dict[str, Any]] = None) -> None:
+                 confirm: Optional[Dict[str, Any]] = None, not_run: bool = False) -> None:
         super().__init__(detail)
+        self.not_run = not_run
         self.confirm = confirm
         self.status = status
         self.code = code
@@ -221,6 +225,16 @@ class FakeAPI:
         self.held_to: Optional[Dict[str, Any]] = None
         #: each machine's points, by its id, as GET /v1/machines/{id}/metrics answers them
         self.metrics: Dict[str, List[Dict[str, Any]]] = {}
+        #: Deploy: answered not_open while closed; a wait never ends while stuck; what can be deployed; what files were sent
+        self.deploy_closed = False
+        self.deploy_stuck = False
+        #: how many looks at a new deployment of files find it still getting its machine ready: files sent until then are refused
+        self.deploy_files_after = 0
+        self.deployments: List[Dict[str, Any]] = []
+        self.deploy_runs: Dict[str, List[Dict[str, Any]]] = {}
+        self.deploy_sent: Dict[str, Dict[str, Any]] = {}
+        self.deploy_repos: List[Dict[str, Any]] = []
+        self.deploy_guess: Dict[str, Any] = {"object": "deploy_guess", "runtime": "node", "build": "npm ci", "start": "npm start", "port": 3000, "note": None}
         #: each machine's open ports, by number
         self.ports: Dict[str, Dict[int, Dict[str, Any]]] = {}
         #: every link made, in order (a link's answer that was lost is still one made)
@@ -233,6 +247,7 @@ class FakeAPI:
         self.app_ports: Dict[str, Dict[int, str]] = {}
         self.idem: Dict[str, Tuple[str, int, bytes, Dict[str, str]]] = {}
         self.execs: List[Dict[str, Any]] = []
+        self.screen_actions: List[Dict[str, Any]] = []
         self.connections = 0
         #: programs signing in through the browser, by their device code; `decide` says what the person did at each
         #: ask for the key (from 1): "pending", "approved", "denied" or "expired"
@@ -401,7 +416,8 @@ class FakeAPI:
                 self.send(h, rid, fault.status or 502, data, {"Content-Type": ctype})
                 return
             if fault.status is not None:
-                self.send(h, rid, *self.problem(rid, Problem(fault.status, fault.code or "conflict", fault.detail, fault.retry_after)))
+                problem = Problem(fault.status, fault.code or "conflict", fault.detail, fault.retry_after, not_run=fault.not_run)
+                self.send(h, rid, *self.problem(rid, problem))
                 return
 
         status, payload, extra = self.idempotent(method, path, query, headers, body, rid)
@@ -446,6 +462,8 @@ class FakeAPI:
             extra["Retry-After"] = str(int(math.ceil(p.retry_after)))
         if p.confirm:
             doc["confirm"] = p.confirm
+        if p.not_run:
+            doc["not_run"] = True
         return p.status, doc, extra
 
     def send(self, h: "_Handler", rid: str, status: int, payload: Any, extra: Optional[Dict[str, str]] = None,
@@ -952,7 +970,7 @@ class FakeAPI:
             nxt = page[-1]["id"] if len(rows) > limit else None
             return 200, {"object": "list", "data": page, "next": nxt}, {}
         if (method, path) == ("POST", "/v1/machines"):
-            b = _only(body, ("name", "project", "region", "gpu", "cpus", "labels", "secrets", "network", "sleep_when_idle", "idle_after_s", "wait_s"))
+            b = _only(body, ("name", "project", "region", "gpu", "cpus", "labels", "secrets", "network", "sleep_when_idle", "idle_after_s", "desktop", "wait_s"))
             secrets = self._secret_names(b.get("secrets"))
             policy = self._policy(b.get("network"))
             if b.get("cpus") == 16:
@@ -982,9 +1000,30 @@ class FakeAPI:
         if found and method == "POST":
             return self._give(self._machine(found.group(1)), "fork" if found.group(2) == "fork-for" else "hand_off", body)
 
+        if path == "/v1/deployments" or path.startswith("/v1/deployments/"):
+            return self._deployments(method, path, q, body, raw)
+
         found = re.match(r"^/v1/machines/([^/]+)/(take-back|give-back)$", path)
         if found and method == "POST":
             return self._back(self._machine(found.group(1)), found.group(2) == "take-back", body)
+
+        found = re.match(r"^/v1/machines/([^/]+)/screen/(picture|actions)$", path)
+        if found:
+            mach = self._machine(found.group(1))
+            mach["state"] = "running"
+            if (method, found.group(2)) == ("GET", "picture"):
+                scale = float(one("scale") or 0.5)
+                return 200, self._picture(scale, one("format") or "png"), {}
+            if (method, found.group(2)) == ("POST", "actions"):
+                b = _only(body, ("actions", "scale", "picture", "settle_ms"))
+                if not b.get("actions") or len(b["actions"]) > 64:
+                    raise Problem(400, "invalid_request", "actions holds 1 to 64 actions")
+                self.screen_actions.append(b)
+                out: Dict[str, Any] = {"done": len(b["actions"])}
+                if b.get("picture"):
+                    out["picture"] = self._picture(float(b.get("scale", 0.5)), "png")
+                return 200, out, {}
+            raise Problem(404, "not_found", "no such route")
 
         found = re.match(r"^/v1/machines/([^/]+)/apps(?:/([^/]+)/(on|off|link|show))?$", path)
         if found:
@@ -1282,6 +1321,99 @@ class FakeAPI:
                 raise Problem(400, "invalid_request", "no secret {}: set it first (PUT /v1/secrets/{})".format(n, n))
         return sorted(set(names))
 
+    def _deployments(self, method: str, path: str, q: Dict[str, List[str]], body: Any, raw: bytes) -> Tuple[int, Any, Dict[str, str]]:
+        """Deploy, as the API answers it: a run ends at a wait, or goes on for ever while ``deploy_stuck``."""
+        if self.deploy_closed:
+            raise Problem(501, "not_open", "Deploy is not open yet")
+        if (method, path) == ("GET", "/v1/deployments"):
+            kept = [d for d in reversed(self.deployments) if "project" not in q or d["project"] == q["project"][0]]
+            return 200, {"object": "list", "data": kept, "next": None}, {}
+        if (method, path) == ("POST", "/v1/deployments"):
+            b = _only(body, ("name", "project", "source", "branch", "build", "start", "port", "cpus", "type", "region", "secrets", "keep_awake"))
+            src = _only(b.get("source"), ("connection", "repo", "url", "upload"))
+            if bool(src.get("connection")) != bool(src.get("repo")) or sum(map(bool, (src.get("repo"), src.get("url"), src.get("upload")))) != 1:
+                raise Problem(400, "invalid_request", "say which code")
+            if not b.get("start") or not b.get("port"):
+                raise Problem(400, "invalid_request", "say how the app starts, and on which port")
+            n = self._next()
+            kind = "upload" if src.get("upload") else "url" if src.get("url") else "repo"
+            d = {
+                "object": "deployment", "id": "dep_%026d" % n, "name": b.get("name", "app"), "project": b.get("project", self.first_project),
+                "held_by": None, "kind": "production",
+                "source": {"kind": kind, "provider": None, "connection": src.get("connection"), "host": None, "repo": src.get("repo"), "url": src.get("url")},
+                "branch": b.get("branch"), "commit": None, "build": b.get("build", ""), "start": b["start"], "port": b["port"], "cpus": b.get("cpus", 2),
+                "type": None, "region": b.get("region"), "keep_awake": b.get("keep_awake", False), "secrets": b.get("secrets", []),
+                "machine": "m_%026d" % n, "url": None, "state": "waiting_for_files" if kind == "upload" else "building", "last_status": None, "run": None,
+                "created_at": "2026-10-23T07:00:00Z", "updated_at": "2026-10-23T07:00:00Z", "live_at": None,
+            }
+            self._begin_run(d, "first", "files" if kind == "upload" and not self.deploy_files_after else "machine")
+            self.deployments.append(d)
+            return 201, d, {}
+        if (method, path) == ("POST", "/v1/deployments/detect"):
+            b = _only(body, ("source", "branch", "files"))
+            if not b.get("source") and b.get("files") is None:
+                raise Problem(400, "invalid_request", "say which code")
+            return 200, self.deploy_guess, {}
+        if (method, path) == ("GET", "/v1/deployments/repos"):
+            kept = [r for r in self.deploy_repos if "connection" not in q or r["connection"] == q["connection"][0]]
+            return 200, {"object": "list", "data": kept, "next": None}, {}
+        if (method, path) == ("GET", "/v1/deployments/branches"):
+            return 200, {"object": "list", "data": [{"object": "deploy_branch", "name": "main", "commit": "abc"}], "default": "main", "known": True, "next": None}, {}
+        found = re.match(r"^/v1/deployments/([^/]+)(?:/([a-z]+))?$", path)
+        if not found:
+            raise Problem(404, "not_found", "no such route")
+        d = next((x for x in self.deployments if x["id"] == found.group(1)), None)
+        if d is None:
+            raise Problem(404, "not_found", "no such deployment")
+        action = found.group(2)
+        if action is None and method == "GET":
+            if d["state"] == "waiting_for_files" and d["run"]["step"] == "machine":
+                self.deploy_files_after -= 1
+                if self.deploy_files_after <= 0:
+                    d["run"]["step"] = "files"
+            return 200, d, {}
+        if action is None and method == "PATCH":
+            d.update(_only(body, ("name", "branch", "build", "start", "port", "keep_awake")))
+            return 200, d, {}
+        if action is None and method == "DELETE":
+            self.deployments.remove(d)
+            return 204, None, {}
+        if (method, action) == ("POST", "redeploy"):
+            if d["run"] and d["run"]["ended_at"] is None:
+                raise Problem(409, "conflict", "a deploy of it is under way: wait for it to end")
+            self._begin_run(d, "redeploy", "fetch")
+            return 202, d, {}
+        if (method, action) == ("PUT", "files"):
+            if d["run"] and d["run"]["ended_at"] is None and d["run"]["step"] == "machine":
+                raise Problem(409, "conflict", "its machine is not ready yet: send the files again in a moment")
+            with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+                self.deploy_sent[d["id"]] = {m.name: (archive.extractfile(m).read().decode() if m.isfile() else None, m.mode) for m in archive.getmembers()}  # type: ignore[union-attr]
+            if d["state"] == "waiting_for_files":
+                d["state"], d["run"]["step"] = "building", "fetch"
+            else:
+                self._begin_run(d, "files", "fetch")
+            return 202, d, {}
+        if (method, action) == ("GET", "wait"):
+            if self.deploy_stuck:
+                raise Problem(408, "timeout", "it is still deploying")
+            if d["run"] and d["run"]["ended_at"] is None:
+                d["run"].update(state="live", ended_at="2026-10-23T07:05:00Z")
+                d.update(state="live", live_at="2026-10-23T07:05:00Z", url="https://{}-{}.run.wheelmachine.ai".format(d["port"], d["machine"][2:]))
+            return 200, d, {}
+        if (method, action) == ("GET", "runs"):
+            return 200, {"object": "list", "data": self.deploy_runs.get(d["id"], []), "next": None}, {}
+        if (method, action) == ("GET", "logs"):
+            kind = q.get("kind", ["build"])[0]
+            run = q.get("run", [d["run"]["id"]])[0]
+            return 200, {"object": "deploy_log", "kind": kind, "run": run, "text": "built", "done": True}, {}
+        raise Problem(404, "not_found", "no such route")
+
+    def _begin_run(self, d: Dict[str, Any], why: str, step: str) -> None:
+        run = {"object": "deploy_run", "id": "dpr_%026d" % self._next(), "why": why, "state": "working", "step": step, "progress": 0, "note": None,
+               "failure": None, "commit": None, "branch": None, "files": None, "created_at": "2026-10-23T07:00:00Z", "started_at": None, "ended_at": None}
+        d["run"] = run
+        self.deploy_runs.setdefault(d["id"], []).insert(0, run)
+
     def _ports(self, method: str, mach: Dict[str, Any], given: Optional[str], link: bool,
                body: Any) -> Tuple[int, Any, Dict[str, str]]:
         """A machine's ports: opened (201; 200 when open already, made public or private as asked), listed lowest
@@ -1338,6 +1470,11 @@ class FakeAPI:
             self.links.append(made)
             return 201, made, {}
         raise Problem(404, "not_found", "no such route")
+
+    def _picture(self, scale: float, form: str) -> Dict[str, Any]:
+        """A picture of a desktop: a few bytes, whatever is asked, said to be of the size a scale would give."""
+        return {"width": int(2880 * scale), "height": int(1800 * scale), "scale": scale, "format": form,
+                "data_base64": base64.b64encode(b"the picture's file").decode()}
 
     def _apps(self, method: str, mach: Dict[str, Any], name: Optional[str], verb: Optional[str],
               body: Any) -> Tuple[int, Any, Dict[str, str]]:

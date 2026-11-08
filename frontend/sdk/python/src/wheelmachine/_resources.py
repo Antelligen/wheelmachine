@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import io
+import json
+import math
 import os
 import re
+import stat
+import tarfile
+import tempfile
 import time
 import uuid
 import warnings
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, BinaryIO, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, overload
+from typing import TYPE_CHECKING, Any, BinaryIO, Dict, Iterator, List, Literal, Mapping, Optional, Sequence, Tuple, Union, overload
 from urllib.parse import quote
 
 from ._errors import WaitTimeoutError
 from ._http import Answer, Body, BytesBody, PathBody, StreamBody
-from ._models import (ConfirmCodeSent, Agent,
+from ._models import (DeployBranches, DeployGuess, DeployLog, DeployRepo, DeployRun, Deployment, FolderFiles, ConfirmCodeSent, Agent, ScreenActionsDone, ScreenPicture,
     AgentList,
     AllowedModels,
     App,
@@ -50,6 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "Machines",
     "Ports",
+    "Deployments",
     "Apps",
     "Projects",
     "Keys",
@@ -73,6 +79,7 @@ LONGEST_WAIT_S = 600.0
 #: How long the API may hold each kind of call before it answers, past which the answer is not coming.
 _HOLDS_READY = 30.0  # create, start, fork: wait_s and this
 _HOLDS_EXEC = 600.0
+_HOLDS_SCREEN = 150.0  # a desktop's picture or its actions: a first start of it, and half a minute with it
 _HOLDS_ACT = 120.0  # pause, stop, delete
 _HOLDS_KEEP = 1800.0  # archive, backup
 _HOLDS_APP_ON = 60.0  # turning an app on: it starts, and is waited for
@@ -240,6 +247,7 @@ class Machines(_Resource):
         network: Union[Mapping[str, Any], NetworkPolicy, None] = None,
         sleep_when_idle: Optional[bool] = None,
         idle_after_s: Optional[int] = None,
+        desktop: Optional[bool] = None,
         wait_s: Optional[float] = None,
         idempotency_key: Optional[str] = None,
         timeout: Optional[float] = None,
@@ -253,7 +261,8 @@ class Machines(_Resource):
         programs have been quiet as long, so a job left running keeps it going; with ``sleep_when_idle=False`` it never
         pauses by itself, and runs (and is charged) until it is paused or stopped. ``secrets`` names the account's
         secrets every command run in it gets as environment variables (``client.secrets``); giving them needs a key
-        with the ``cloud:secrets:write`` scope, of the whole account. A retry after a lost connection never makes two:
+        with the ``cloud:secrets:write`` scope, of the whole account. ``desktop=True`` turns its desktop on behind the
+        answer, so that a first ``screenshot()`` finds it ready. A retry after a lost connection never makes two:
         the call carries an Idempotency-Key (``idempotency_key``, or one made for it).
         """
         payload = _given(
@@ -267,6 +276,7 @@ class Machines(_Resource):
             network=_network(network),
             sleep_when_idle=sleep_when_idle,
             idle_after_s=idle_after_s,
+            desktop=desktop,
             wait_s=wait_s,
         )
         data, info = self._client._json(
@@ -598,7 +608,8 @@ class Machines(_Resource):
         (``["python3", "-c", "print(2+2)"]``); ``shell`` is a line for ``sh -lc`` (``"ls -la | wc -l"``). It runs
         in the work folder as the machine's user unless ``cwd`` or ``user="root"`` says otherwise; a paused
         machine is woken for it. It runs at most 10 minutes; a call that loses its connection is not sent again,
-        since the command may have run."""
+        since the command may have run, and nor is one answered 503 unless the answer says it never reached its
+        machine."""
         if isinstance(command, (str, bytes)):
             raise TypeError("command is a list of words, such as ['ls', '-la']; a line for the shell goes in shell=")
         if (command is None) == (shell is None):
@@ -616,9 +627,112 @@ class Machines(_Resource):
             "POST",
             "/v1/machines/{}/exec".format(_id(machine_id, "machine_id")),
             payload=payload,
+            command=True,
             timeout=timeout if timeout is not None else self._client._held(_HOLDS_EXEC),
         )
         return _answered(ExecResult.from_dict(data or {}), info)
+
+    def screenshot(
+        self,
+        machine_id: str,
+        *,
+        scale: Optional[float] = None,
+        format: Optional[Literal["png", "jpeg"]] = None,
+        region: Optional[Mapping[str, int]] = None,
+        timeout: Optional[float] = None,
+    ) -> ScreenPicture:
+        """Sees the machine's desktop as a picture: ``.to_bytes()`` is its file. ``scale`` is 1, or one over a whole
+        number up to 8 (0.5 when left out: 1440 x 900), and ``region`` a part of the screen, ``{"x", "y", "w", "h"}``,
+        in pixels of a picture at this scale. A paused machine is woken for it, and its desktop turned on, which can take
+        up to a minute the first time. It shows whatever is on the screen, and goes wherever your program sends it: an
+        agent passes it on to whichever model provider it uses."""
+        query: List[Tuple[str, str]] = []
+        if scale is not None:
+            query.append(("scale", repr(float(scale))))
+        if format is not None:
+            query.append(("format", format))
+        for name in ("x", "y", "w", "h"):
+            if region is not None and name in region:
+                query.append((name, str(int(region[name]))))
+        data, info = self._client._json(
+            "GET",
+            "/v1/machines/{}/screen/picture".format(_id(machine_id, "machine_id")),
+            query=query,
+            timeout=timeout if timeout is not None else self._client._held(_HOLDS_SCREEN),
+        )
+        return _answered(ScreenPicture.from_dict(data or {}), info)
+
+    def use_screen(
+        self,
+        machine_id: str,
+        actions: Sequence[Mapping[str, Any]],
+        *,
+        scale: Optional[float] = None,
+        picture: bool = False,
+        settle_ms: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> ScreenActionsDone:
+        """Works the machine's desktop, in order: 1 to 64 actions, each ``{"type": ...}`` - ``click`` and ``move`` with ``x``
+        and ``y``, ``drag`` with ``x``, ``y``, ``to_x`` and ``to_y``, ``scroll`` with ``x``, ``y`` and ``dx`` or ``dy``, ``keys``
+        with ``keys``, ``type`` with ``text``, ``wait`` with ``ms``. ``x`` and ``y`` are pixels of a picture of the whole screen
+        at this ``scale``. With ``picture=True``, a picture comes back after ``settle_ms``. What is typed is never kept or
+        logged. A call that may have reached the API is never sent again, not even when refused for a moment, since a click
+        or a word must not happen twice: look at the screen before you send it again."""
+        if isinstance(actions, Mapping):
+            raise TypeError("actions is a list of actions, such as [{'type': 'wait', 'ms': 100}]")
+        payload = _given(actions=[dict(a) for a in actions], scale=scale, settle_ms=settle_ms)
+        if picture:
+            payload["picture"] = True
+        data, info = self._client._json(
+            "POST",
+            "/v1/machines/{}/screen/actions".format(_id(machine_id, "machine_id")),
+            payload=payload,
+            once=True,
+            timeout=timeout if timeout is not None else self._client._held(_HOLDS_SCREEN),
+        )
+        return _answered(ScreenActionsDone.from_dict(data or {}), info)
+
+    def click(
+        self,
+        machine_id: str,
+        x: int,
+        y: int,
+        *,
+        button: Optional[Literal["left", "middle", "right"]] = None,
+        count: Optional[int] = None,
+        scale: Optional[float] = None,
+        timeout: Optional[float] = None,
+    ) -> ScreenActionsDone:
+        """Clicks on the machine's desktop, at a place in pixels of a picture of the whole screen at this ``scale``."""
+        return self.use_screen(machine_id, [_given(type="click", x=x, y=y, button=button, count=count)], scale=scale, timeout=timeout)
+
+    def type(self, machine_id: str, text: str, *, timeout: Optional[float] = None) -> ScreenActionsDone:
+        """Types on the machine's desktop, wherever it is taking keys: at most 4096 characters, never kept or logged. Letters
+        of every language and emoji can be typed, but characters that aren't on an English keyboard, such as accents, Russian,
+        Chinese or emoji, can come out wrong. Take a picture after typing them to check; a password box can't be checked this
+        way."""
+        return self.use_screen(machine_id, [{"type": "type", "text": text}], timeout=timeout)
+
+    def keys(self, machine_id: str, *keys: str, timeout: Optional[float] = None) -> ScreenActionsDone:
+        """Presses keys together on the machine's desktop, such as ``keys(id, "ctrl", "c")``. A key is a character, or one of
+        enter, tab, escape, backspace, delete, insert, home, end, pageup, pagedown, up, down, left, right, space, ctrl,
+        shift, alt, super, menu, capslock, printscreen, f1 to f12."""
+        return self.use_screen(machine_id, [{"type": "keys", "keys": list(keys)}], timeout=timeout)
+
+    def scroll(
+        self,
+        machine_id: str,
+        x: int,
+        y: int,
+        *,
+        dx: Optional[int] = None,
+        dy: Optional[int] = None,
+        scale: Optional[float] = None,
+        timeout: Optional[float] = None,
+    ) -> ScreenActionsDone:
+        """Scrolls on the machine's desktop at a place: ``dy`` notches down, or up below 0, and ``dx`` to the right, or to the
+        left below 0."""
+        return self.use_screen(machine_id, [_given(type="scroll", x=x, y=y, dx=dx, dy=dy)], scale=scale, timeout=timeout)
 
     def metrics(
         self,
@@ -791,6 +905,610 @@ class Ports(_Resource):
             once=True,
         )
         return _answered(PortLink.from_dict(data or {}), info)
+
+
+#: What stays on this computer, wherever it is in the folder and in any case: a file or a folder of one of these names, or
+#: a name beginning or ending so. Another copy of the code's history and what its build makes again, and keys, tokens and
+#: a person's settings: a deployment's secrets are given by name. ``wm`` and the dashboard's packer hold the same lists.
+_DEPLOY_LEFT_OUT_NAMES = frozenset({
+    ".aws", ".azure", ".bash_history", ".boto", ".cache", ".config", ".docker", ".dockercfg", ".gcloud", ".git",
+    ".git-credentials", ".gitconfig", ".gnupg", ".hg", ".htpasswd", ".kube", ".local", ".my.cnf", ".mysql_history", ".netrc",
+    ".node_repl_history", ".npmrc", ".pgpass", ".psql_history", ".pypirc", ".python_history", ".s3cfg", ".ssh", ".svn", ".terraform",
+    ".vault-token", ".venv", ".wheelmachine", ".zsh_history", "__pycache__", "_netrc", "credentials.json", "credentials.toml",
+    "node_modules", "secrets.json", "secrets.toml", "secrets.yaml", "secrets.yml", "service-account.json", "serviceaccountkey.json", "terraform.tfvars", "venv",
+})
+_DEPLOY_LEFT_OUT_PREFIXES = (".env", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa")
+_DEPLOY_LEFT_OUT_SUFFIXES = (".env", ".jks", ".kdbx", ".key", ".keystore", ".p12", ".pem", ".pfx", ".ppk", ".tfstate", ".tfstate.backup", ".tfvars")
+#: As much as the API takes of a deployment's files: a folder over them is told so before anything is sent.
+_DEPLOY_FILES_MOST = 20_000
+_DEPLOY_FILE_MOST = 100_000_000
+_DEPLOY_ALL_MOST = 500_000_000
+_DEPLOY_PATH_MOST = 255
+_DEPLOY_DEPTH_MOST = 32
+#: The most of a .gitignore read: one longer is no list of paths a person wrote.
+_DEPLOY_IGNORE_MOST = 1 << 20
+#: How often a run getting its machine ready is looked at, before its files are sent.
+_DEPLOY_FILES_POLL_S = 2.0
+#: The files at a folder's top that say how it builds and starts, as the API reads them by name; those whose contents it
+#: reads, up to 64 KiB. The rest it needs only to know are there.
+_DEPLOY_DETECT_NAMES = (
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "requirements.txt",
+    "pyproject.toml",
+    "uv.lock",
+    "Pipfile",
+    "manage.py",
+    "main.py",
+    "app.py",
+    "Procfile",
+    "go.mod",
+    "Cargo.toml",
+    "index.html",
+    "Dockerfile",
+)
+_DEPLOY_DETECT_READ = frozenset({"package.json", "requirements.txt", "pyproject.toml", "Pipfile", "Procfile", "go.mod", "Cargo.toml"})
+_DEPLOY_DETECT_MOST = 64 << 10
+
+
+def _name_left_out(name: str) -> bool:
+    """Whether a file or a folder of this name stays here, whatever else is said."""
+    low = name.lower()
+    return low in _DEPLOY_LEFT_OUT_NAMES or low.startswith(_DEPLOY_LEFT_OUT_PREFIXES) or low.endswith(_DEPLOY_LEFT_OUT_SUFFIXES)
+
+
+class _IgnoreRule:
+    """One line of a .gitignore."""
+
+    __slots__ = ("base", "segments", "anchored", "negate", "dir_only")
+
+    def __init__(self, base: str, segments: List[str], anchored: bool, negate: bool, dir_only: bool) -> None:
+        self.base = base
+        self.segments = segments
+        self.anchored = anchored
+        self.negate = negate
+        self.dir_only = dir_only
+
+
+def _parse_ignore(base: str, text: str) -> List[_IgnoreRule]:
+    """The lines of a .gitignore read in the folder ``base`` ("", or ending in a slash), as git reads them: the last line
+    that matches a path says whether it stays, so that a folder's own .gitignore, read after those above it, has the last
+    word; a line beginning ! takes a path back. A path in a folder that stays is never looked at, so nothing in it can be
+    taken back, as in git. ``wm`` and the dashboard read them the same way, and the three share their test's cases."""
+    rules: List[_IgnoreRule] = []
+    for line in text.split("\n"):
+        if line.endswith("\r"):
+            line = line[:-1]
+        while line.endswith(" ") and not line.endswith("\\ "):
+            line = line[:-1]
+        if not line or line[0] == "#":
+            continue
+        negate = line[0] == "!"
+        if negate:
+            line = line[1:]
+        elif line.startswith(("\\!", "\\#")):
+            line = line[1:]
+        dir_only = line.endswith("/")
+        line = line.rstrip("/")
+        if not line:
+            continue
+        segments: List[str] = []
+        for part in line.lstrip("/").split("/"):
+            # (a run of ** is one)
+            if part != "**" or not segments or segments[-1] != "**":
+                segments.append(part)
+        rules.append(_IgnoreRule(base, segments, "/" in line, negate, dir_only))
+    return rules
+
+
+def _ignored_by(rules: Sequence[_IgnoreRule], path: str, is_dir: bool) -> bool:
+    """Whether the rules leave out a path in the folder (with slashes, and no slash at its end)."""
+    out = False
+    for r in rules:
+        if (r.dir_only and not is_dir) or not path.startswith(r.base):
+            continue
+        rest = path[len(r.base):]
+        found = _ignore_segments(r.segments, rest.split("/")) if r.anchored else _ignore_name(r.segments[0], rest[rest.rfind("/") + 1:])
+        if found:
+            out = not r.negate
+    return out
+
+
+def _ignore_segments(pattern: Sequence[str], path: Sequence[str]) -> bool:
+    """Whether a pattern's segments match a path's: ** stands for any number of folders, and at the end for all that is
+    inside (one thing at least). Worked a segment at a time, so that no .gitignore can make it take long."""
+    can = [False] * (len(path) + 1)
+    can[0] = True
+    for i, p in enumerate(pattern):
+        following = [False] * (len(path) + 1)
+        if p == "**":
+            seen = False
+            for j in range(len(following)):
+                following[j] = seen or (can[j] and i < len(pattern) - 1)
+                seen = seen or can[j]
+        else:
+            for j in range(1, len(following)):
+                following[j] = can[j - 1] and _ignore_name(p, path[j - 1])
+        can = following
+    return can[len(path)]
+
+
+def _ignore_name(pattern: str, name: str) -> bool:
+    """Whether one name matches a pattern's segment: * for any characters, ? for one, [a-z] for one of those, \\ for the
+    character after it as it is. Never goes back further than the last *, so that no pattern can make it take long."""
+    pi = ni = mark = 0
+    star = -1
+    while ni < len(name):
+        if pi < len(pattern) and pattern[pi] == "*":
+            star, mark = pi, ni
+            pi += 1
+            continue
+        if pi < len(pattern):
+            ok, following = _ignore_char(pattern, pi, name[ni])
+            if ok:
+                pi, ni = following, ni + 1
+                continue
+        if star < 0:
+            return False
+        mark += 1
+        pi, ni = star + 1, mark
+    while pi < len(pattern) and pattern[pi] == "*":
+        pi += 1
+    return pi == len(pattern)
+
+
+def _ignore_char(p: str, at: int, c: str) -> Tuple[bool, int]:
+    """Whether a character matches what the pattern holds at this place, and the place after that."""
+    if p[at] == "?":
+        return True, at + 1
+    if p[at] == "\\" and at + 1 < len(p):
+        return p[at + 1] == c, at + 2
+    if p[at] == "[":
+        i = at + 1
+        negate = i < len(p) and p[i] in "!^"
+        if negate:
+            i += 1
+        found = False
+        first = True
+        while i < len(p) and (first or p[i] != "]"):
+            first = False
+            lo = p[i]
+            if lo == "\\" and i + 1 < len(p):
+                i += 1
+                lo = p[i]
+            hi = lo
+            if i + 2 < len(p) and p[i + 1] == "-" and p[i + 2] != "]":
+                i += 2
+                hi = p[i]
+                if hi == "\\" and i + 1 < len(p):
+                    i += 1
+                    hi = p[i]
+            found = found or lo <= c <= hi
+            i += 1
+        if i < len(p):
+            return found != negate, i + 1
+        # (no end to it: the [ is itself)
+    return p[at] == c, at + 1
+
+
+class _FolderRules:
+    """What of a folder stays here, as its rules are read on the way in."""
+
+    def __init__(self, root: str, exclude: Optional[Sequence[str]], gitignore: bool) -> None:
+        self.root = root
+        self.gitignore = gitignore
+        self.ignore: List[_IgnoreRule] = []
+        self.exclude: List[_IgnoreRule] = []
+        for pattern in exclude or ():
+            self.exclude.extend(_parse_ignore("", pattern[2:] if pattern.startswith("./") else pattern))
+
+    def enter(self, name: str) -> None:
+        """Reads a folder's .gitignore, as it is gone into: ``name`` is its path in the folder sent, "" for its top. One
+        that is a link is not read: it could be anything."""
+        if not self.gitignore:
+            return
+        base = name + "/" if name else ""
+        path = os.path.join(self.root, base.replace("/", os.sep), ".gitignore")
+        try:
+            found = os.lstat(path)
+            if stat.S_ISREG(found.st_mode) and found.st_size <= _DEPLOY_IGNORE_MOST:
+                self.ignore.extend(_parse_ignore(base, _read_regular(path, found, _DEPLOY_IGNORE_MOST)))
+        except OSError:
+            pass
+
+    def left_out(self, name: str, is_dir: bool) -> bool:
+        """Whether a file or a folder stays here, by its path in the folder sent."""
+        return _name_left_out(name[name.rfind("/") + 1:]) or _ignored_by(self.exclude, name, is_dir) or _ignored_by(self.ignore, name, is_dir)
+
+
+def _read_regular(path: str, seen: os.stat_result, most: int) -> str:
+    """A file read whole, up to ``most`` bytes, if it is still the regular file that was looked at: not one put in its
+    place, or a link to somewhere else."""
+    with _open_regular(path, seen) as f:
+        return f.read(most).decode("utf-8", "replace")
+
+
+def _open_regular(path: str, seen: os.stat_result) -> BinaryIO:
+    f = open(path, "rb")
+    now = os.fstat(f.fileno())
+    if not stat.S_ISREG(now.st_mode) or not os.path.samestat(seen, now):
+        f.close()
+        raise OSError("{} changed while it was being read".format(path))
+    return f
+
+
+def _is_inside(folder: str, path: str) -> bool:
+    """Whether ``path`` is ``folder``, or inside it."""
+    try:
+        rel = os.path.relpath(path, folder)
+    except ValueError:  # (another drive)
+        return False
+    return rel != ".." and not rel.startswith(".." + os.sep)
+
+
+def _settings_folder() -> str:
+    """The folder ``wm`` keeps its settings in, with its API key: $XDG_CONFIG_HOME/wheelmachine, else ~/.config/wheelmachine."""
+    config = os.environ.get("XDG_CONFIG_HOME", "")
+    if not config or not os.path.isabs(config):
+        config = os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(config, "wheelmachine")
+
+
+def _folder_to_send(folder: "os.PathLike[str] | str") -> str:
+    """The folder, as it really is, or an error saying why it must not be sent whole: the home folder and anything above it,
+    which hold everything a person has, and a folder that is, or is inside, one of the names that stay here, or that holds
+    ``wm``'s settings."""
+    root = os.path.realpath(os.fspath(folder))
+    if not os.path.isdir(root):
+        raise ValueError("{} is not a folder".format(os.fspath(folder)))
+    home = os.path.realpath(os.path.expanduser("~"))
+    if _is_inside(root, home):
+        raise ValueError("{} holds your home folder, with all you keep there: say which folder of it to send".format(root))
+    for step in root.replace(os.sep, "/").split("/"):
+        if step and _name_left_out(step):
+            raise ValueError("{} is in {}, which stays on this computer".format(root, step))
+    settings = os.path.realpath(_settings_folder())
+    if _is_inside(root, settings) or _is_inside(settings, root):
+        raise ValueError("{} holds wm's settings, with its API key: say another folder".format(root))
+    return root
+
+
+def _walk_folder(root: str, rules: _FolderRules) -> Iterator[Tuple[str, str, bool, os.stat_result]]:
+    """What goes of a folder and what stays, a path at a time, the way down sorted: (kind, path in the folder, whether it
+    is a folder, what it is). ``kind`` is "goes" or "stays". What cannot be read is an error, not something left behind."""
+    rules.enter("")
+    stack = [""]
+    while stack:
+        at = stack.pop()
+        with os.scandir(os.path.join(root, at.replace("/", os.sep))) as listing:
+            entries = sorted(listing, key=lambda e: e.name)
+        below: List[str] = []
+        for entry in entries:
+            name = at + entry.name
+            found = entry.stat(follow_symlinks=False)
+            is_dir = stat.S_ISDIR(found.st_mode)
+            if rules.left_out(name, is_dir):
+                yield "stays", name + "/" if is_dir else name, is_dir, found
+                continue
+            if not is_dir and not stat.S_ISREG(found.st_mode):
+                yield "stays", name, False, found
+                continue
+            if is_dir:
+                rules.enter(name)
+                below.append(name + "/")
+            yield "goes", name, is_dir, found
+        stack.extend(reversed(below))
+
+
+class _PackedFolder:
+    """What goes of a folder and what stays."""
+
+    __slots__ = ("files", "bytes", "paths", "left_out")
+
+    def __init__(self) -> None:
+        self.files = 0
+        self.bytes = 0
+        self.paths: List[str] = []
+        self.left_out: List[str] = []
+
+
+def _checked_path(name: str) -> None:
+    """A path the API takes: told here, before anything is sent."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7f or c == "\\" for c in name):
+        raise ValueError("{!r}: a path has no control characters and no backslashes".format(name))
+    if len(os.fsencode(name)) > _DEPLOY_PATH_MOST:
+        raise ValueError("{}: a path is at most {} bytes".format(name, _DEPLOY_PATH_MOST))
+    if name.count("/") >= _DEPLOY_DEPTH_MOST:
+        raise ValueError("{}: at most {} folders deep".format(name, _DEPLOY_DEPTH_MOST))
+
+
+def _pack_folder(folder: "os.PathLike[str] | str", into: Optional[BinaryIO], exclude: Optional[Sequence[str]] = None, gitignore: bool = True) -> _PackedFolder:
+    """A folder as a gzipped tar archive, written to ``into`` (None: only what would go is found out)."""
+    root = _folder_to_send(folder)
+    out = _PackedFolder()
+    rules = _FolderRules(root, exclude, gitignore)
+    archive = tarfile.open(fileobj=into, mode="w:gz", format=tarfile.PAX_FORMAT) if into is not None else None
+    try:
+        for kind, name, is_dir, found in _walk_folder(root, rules):
+            if kind == "stays":
+                out.left_out.append(name)
+                continue
+            _checked_path(name)
+            if is_dir:
+                if archive is not None:
+                    archive.addfile(_tar_entry(name + "/", found, tarfile.DIRTYPE))
+                continue
+            out.files += 1
+            if out.files > _DEPLOY_FILES_MOST:
+                raise ValueError("at most {} files can be sent: use a repository, or send less".format(_DEPLOY_FILES_MOST))
+            if found.st_size > _DEPLOY_FILE_MOST:
+                raise ValueError("{}: a file is at most 100 MB".format(name))
+            out.bytes += found.st_size
+            if out.bytes > _DEPLOY_ALL_MOST:
+                raise ValueError("at most 500 MB can be sent: use a repository, or send less")
+            out.paths.append(name)
+            if archive is not None:
+                with _open_regular(os.path.join(root, name.replace("/", os.sep)), found) as f:
+                    archive.addfile(_tar_entry(name, found, tarfile.REGTYPE), f)
+    finally:
+        if archive is not None:
+            archive.close()
+    if out.files == 0:
+        raise ValueError("{} has no files to send".format(root))
+    out.paths.sort()
+    out.left_out.sort()
+    return out
+
+
+def _tar_entry(name: str, found: os.stat_result, kind: bytes) -> tarfile.TarInfo:
+    entry = tarfile.TarInfo(name)
+    entry.type = kind
+    entry.mtime = int(found.st_mtime)
+    entry.mode = 0o755 if kind == tarfile.DIRTYPE or found.st_mode & 0o111 else 0o644
+    entry.size = found.st_size if kind == tarfile.REGTYPE else 0
+    return entry
+
+
+class Deployments(_Resource):
+    """``client.deployments``: apps put on the internet from a repository on GitHub or GitLab, the https address of a
+    public one, or files, each on a machine of its own at a public address.
+
+    Not open yet: until Deploy opens, each call raises an error whose code is ``not_open``."""
+
+    def create(
+        self,
+        *,
+        start: str,
+        port: int,
+        repo: Optional[str] = None,
+        connection: Optional[str] = None,
+        url: Optional[str] = None,
+        upload: bool = False,
+        name: Optional[str] = None,
+        project: Optional[str] = None,
+        branch: Optional[str] = None,
+        build: Optional[str] = None,
+        cpus: Optional[int] = None,
+        type: Optional[str] = None,
+        region: Optional[str] = None,
+        secrets: Optional[Sequence[str]] = None,
+        keep_awake: Optional[bool] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Deployment:
+        """Makes a deployment and begins its first run, which goes on after this answer: ``wait()`` follows it. Its code
+        comes from a repository of one of your connections (``connection`` and ``repo``), a public repository's https
+        address (``url``), or files (``upload=True``, then ``send_folder()`` or ``send_files()``). ``start`` is what
+        starts it, with its port in ``$PORT`` and ``HOST`` as 0.0.0.0, and ``port`` the port it listens on; ``detect()``
+        suggests them. It is charged as any machine, builds included. A retry after a lost connection never makes two."""
+        source = _given(connection=connection, repo=repo, url=url, upload=True if upload else None)
+        payload = _given(
+            name=name,
+            project=project,
+            source=source,
+            branch=branch,
+            build=build,
+            start=start,
+            port=_port(port),
+            cpus=cpus,
+            type=type,
+            region=region,
+            secrets=_names(secrets) if secrets is not None else None,
+            keep_awake=keep_awake,
+        )
+        data, info = self._client._json("POST", "/v1/deployments", payload=payload, idempotency_key=_key(idempotency_key))
+        return _answered(Deployment.from_dict(data or {}), info)
+
+    def list(self, *, project: Optional[str] = None) -> List[Deployment]:
+        """The deployments you see, the newest first, each with its current or last run."""
+        data, _ = self._client._json("GET", "/v1/deployments", query=[("project", project)] if project else None)
+        return [Deployment.from_dict(d) for d in _items(data)]
+
+    def get(self, deployment_id: str) -> Deployment:
+        data, info = self._client._json("GET", "/v1/deployments/" + _id(deployment_id, "deployment_id"))
+        return _answered(Deployment.from_dict(data or {}), info)
+
+    def update(
+        self,
+        deployment_id: str,
+        *,
+        name: Optional[str] = None,
+        branch: Optional[str] = None,
+        build: Optional[str] = None,
+        start: Optional[str] = None,
+        port: Optional[int] = None,
+        keep_awake: Optional[bool] = None,
+    ) -> Deployment:
+        """Changes its settings. Its name, branch, commands and port apply from its next run; ``keep_awake`` at once.
+        Only the person who deployed it can."""
+        payload = _given(name=name, branch=branch, build=build, start=start, port=_port(port) if port is not None else None, keep_awake=keep_awake)
+        data, info = self._client._json("PATCH", "/v1/deployments/" + _id(deployment_id, "deployment_id"), payload=payload)
+        return _answered(Deployment.from_dict(data or {}), info)
+
+    def delete(self, deployment_id: str) -> None:
+        """Deletes it, and its machine with all its files. Its address answers nothing from then on."""
+        self._client._json("DELETE", "/v1/deployments/" + _id(deployment_id, "deployment_id"))
+
+    def redeploy(self, deployment_id: str) -> Deployment:
+        """Fetches its branch as it is now, or uses its files again, and builds it. A build that fails leaves the live
+        version running. Once built, the live version stops and the new one starts, and one that does not answer within
+        two minutes is replaced by the last one. ``wait()`` follows it. A call that may have reached the API is not sent
+        again: a deployment has one run at a time."""
+        data, info = self._client._json("POST", "/v1/deployments/{}/redeploy".format(_id(deployment_id, "deployment_id")), once=True)
+        return _answered(Deployment.from_dict(data or {}), info)
+
+    def send_files(
+        self,
+        deployment_id: str,
+        data: FileData,
+        *,
+        content_length: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Deployment:
+        """Sends a tar archive, or a gzipped one, as its files: its first, or new ones in place of its last. It is then
+        built and started. ``data`` is bytes, a ``pathlib.Path`` to the archive, or a file object opened in binary mode
+        (one that cannot seek needs ``content_length``). At most 20,000 files, 100 MB a file and 500 MB in all; a folder
+        goes through ``send_folder()``."""
+        answer = self._client._send(
+            "PUT",
+            "/v1/deployments/{}/files".format(_id(deployment_id, "deployment_id")),
+            body=_file_body(data, content_length),
+            timeout=timeout,
+            buffer=True,
+        )
+        return _answered(Deployment.from_dict(json.loads(answer.content.decode("utf-8"))), self._client._info(answer))
+
+    def send_folder(
+        self,
+        deployment_id: str,
+        folder: "os.PathLike[str] | str",
+        *,
+        exclude: Optional[Sequence[str]] = None,
+        gitignore: bool = True,
+        ready_timeout_s: float = 600.0,
+        timeout: Optional[float] = None,
+    ) -> Deployment:
+        """Packs a folder here and sends it as ``send_files()`` does, once its machine is ready for it, waiting at most
+        ``ready_timeout_s`` seconds. Left out, wherever they are and in any case, are keys, tokens and settings (``.env`` and
+        the like, ``.git``, ``.npmrc``, ``.ssh``, ``*.pem``), what its ``.gitignore`` files name (unless ``gitignore=False``),
+        what ``exclude`` names, written as in a ``.gitignore``, ``node_modules`` and the like, and links, which the API does
+        not take: the answer's ``left_out`` names them, and ``folder_files()`` says it all without sending. A home folder
+        and a folder of settings are refused. At most 20,000 files, 100 MB a file and 500 MB in all, told here before
+        anything is sent. Give its secrets by name."""
+        with tempfile.TemporaryFile() as packed:
+            found = _pack_folder(folder, packed, exclude, gitignore)
+            size = packed.tell()
+            packed.seek(0)
+            self._until_files_wanted(deployment_id, ready_timeout_s)
+            sent = self.send_files(deployment_id, packed, content_length=size, timeout=timeout)
+        sent.left_out = found.left_out
+        return sent
+
+    def folder_files(self, folder: "os.PathLike[str] | str", *, exclude: Optional[Sequence[str]] = None, gitignore: bool = True) -> FolderFiles:
+        """What ``send_folder()`` would send of a folder, and what it would leave out: nothing is sent, and nothing asked of
+        the API."""
+        found = _pack_folder(folder, None, exclude, gitignore)
+        return FolderFiles(files=found.paths, bytes=found.bytes, left_out=found.left_out)
+
+    def _until_files_wanted(self, deployment_id: str, timeout_s: float) -> None:
+        """Waits while its run gets its machine ready: the API holds a call only a minute for that, and a machine may take
+        longer, and it is better not to send it all to be refused."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            now = self.get(deployment_id)
+            if now.run is None or now.run.ended_at is not None or now.run.step != "machine":
+                return
+            if time.monotonic() >= deadline:
+                raise WaitTimeoutError("its machine is not ready yet, so its files were not sent: {} is made, and send_folder() can be called again".format(now.id),
+                                       status=408, code="timeout")
+            time.sleep(min(_DEPLOY_FILES_POLL_S, max(0.0, deadline - time.monotonic())))
+
+    def wait(self, deployment_id: str, *, timeout_s: float = 300.0) -> Deployment:
+        """Answers once its current run has ended (at once when it has none going): its ``state`` and its ``run`` say how
+        it ended. Raises WaitTimeoutError when it is still deploying after ``timeout_s`` seconds. Waits longer than the
+        API's 600 seconds are asked for again."""
+        if timeout_s < 0:
+            raise ValueError("timeout_s cannot be negative")
+        path = "/v1/deployments/{}/wait".format(_id(deployment_id, "deployment_id"))
+        deadline = time.monotonic() + timeout_s
+        while True:
+            left = max(0.0, deadline - time.monotonic())
+            this = min(left, LONGEST_WAIT_S)
+            began = time.monotonic()
+            try:
+                data, info = self._client._json("GET", path, query=[("timeout_s", str(math.ceil(this)))], timeout=self._client._held(this))
+            except WaitTimeoutError:
+                if left <= LONGEST_WAIT_S or time.monotonic() - began < this - 1:
+                    raise
+                continue
+            return _answered(Deployment.from_dict(data or {}), info)
+
+    def runs(self, deployment_id: str) -> List[DeployRun]:
+        """Its last 20 runs, the newest first."""
+        data, _ = self._client._json("GET", "/v1/deployments/{}/runs".format(_id(deployment_id, "deployment_id")))
+        return [DeployRun.from_dict(r) for r in _items(data)]
+
+    def logs(self, deployment_id: str, *, kind: Optional[Literal["build", "app"]] = None, run: Optional[str] = None) -> DeployLog:
+        """Its log: ``build``, a run's own, its last 256 KB (``run``, or its last run's); or ``app``, the end of what the
+        app itself writes, which wakes its machine. Only the person who deployed it can."""
+        query = [(k, v) for k, v in (("kind", kind), ("run", run)) if v]
+        data, info = self._client._json("GET", "/v1/deployments/{}/logs".format(_id(deployment_id, "deployment_id")), query=query or None)
+        return _answered(DeployLog.from_dict(data or {}), info)
+
+    def detect(
+        self,
+        *,
+        connection: Optional[str] = None,
+        repo: Optional[str] = None,
+        url: Optional[str] = None,
+        branch: Optional[str] = None,
+        folder: "os.PathLike[str] | str | None" = None,
+        exclude: Optional[Sequence[str]] = None,
+        gitignore: bool = True,
+    ) -> DeployGuess:
+        """How code most likely builds and starts, a suggestion to change: a repository's, or that of a ``folder`` here, by
+        the few files at its top that say so, of those ``send_folder()`` would send with the same ``exclude`` and
+        ``gitignore``. A link is not followed: it could lead anywhere."""
+        if folder is not None:
+            payload: Dict[str, Any] = {"files": _detect_files(folder, exclude, gitignore)}
+        else:
+            payload = _given(source=_given(connection=connection, repo=repo, url=url), branch=branch)
+        data, info = self._client._json("POST", "/v1/deployments/detect", payload=payload, repeatable=True)
+        return _answered(DeployGuess.from_dict(data or {}), info)
+
+    def repos(self, *, project: Optional[str] = None, connection: Optional[str] = None) -> List[DeployRepo]:
+        """The repositories you may deploy into a team (your first when left out), the most recently pushed to first."""
+        query = [(k, v) for k, v in (("project", project), ("connection", connection)) if v]
+        data, _ = self._client._json("GET", "/v1/deployments/repos", query=query or None)
+        return [DeployRepo.from_dict(r) for r in _items(data)]
+
+    def branches(self, *, connection: Optional[str] = None, repo: Optional[str] = None, url: Optional[str] = None) -> DeployBranches:
+        """A repository's branches, and which is its default: of one of your connections (``connection`` and ``repo``), or
+        a public one (``url``)."""
+        query = [(k, v) for k, v in (("connection", connection), ("repo", repo), ("url", url)) if v]
+        data, info = self._client._json("GET", "/v1/deployments/branches", query=query or None)
+        return _answered(DeployBranches.from_dict(data or {}), info)
+
+
+def _detect_files(folder: "os.PathLike[str] | str", exclude: Optional[Sequence[str]] = None, gitignore: bool = True) -> Dict[str, Optional[str]]:
+    """The files at a folder's top that say how it builds and starts."""
+    root = _folder_to_send(folder)
+    rules = _FolderRules(root, exclude, gitignore)
+    rules.enter("")
+    out: Dict[str, Optional[str]] = {}
+    for name in _DEPLOY_DETECT_NAMES:
+        path = os.path.join(root, name)
+        try:
+            found = os.lstat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(found.st_mode) or rules.left_out(name, False):
+            continue
+        out[name] = None
+        if name in _DEPLOY_DETECT_READ and found.st_size <= _DEPLOY_DETECT_MOST:
+            out[name] = _read_regular(path, found, _DEPLOY_DETECT_MOST)
+    return out
 
 
 class Apps(_Resource):
