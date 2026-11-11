@@ -62,6 +62,7 @@ CREATES = [
     ("POST", re.compile(r"^/v1/machines/[^/]+/(fork-for|hand-off|take-back|give-back)$")),
     ("POST", re.compile(r"^/v1/requests$")),
     ("POST", re.compile(r"^/v1/machines/[^/]+/backups$")),
+    ("POST", re.compile(r"^/v1/machines/[^/]+/pull-requests$")),
     ("POST", re.compile(r"^/v1/projects$")),
     ("POST", re.compile(r"^/v1/keys$")),
 ]
@@ -215,6 +216,8 @@ class FakeAPI:
         self.folder_files: Dict[str, bytes] = {}
         #: every backup taken, the oldest first
         self.backups: List[Dict[str, Any]] = []
+        #: what a machine reaches of its team's repositories, as GET /v1/machines/{id}/repositories answers them
+        self.repositories: List[Dict[str, Any]] = []
         #: by name: the value as it reached the API (never in an answer), and when it was made and set
         self.secrets: Dict[str, Dict[str, str]] = {}
         # the model chosen, by agent ("*": every agent), as GET /v1/agents shows it
@@ -327,7 +330,7 @@ class FakeAPI:
             "cpus": 2,
             "memory_gb": 4,
             "sleep_when_idle": True,
-            "idle_after_s": 300,
+            "idle_after_s": 1800,
             "labels": dict(labels or {}),
             "secrets": [],
             "network": {"internet": "open", "allow": []},
@@ -1033,7 +1036,7 @@ class FakeAPI:
         if found:
             return self._ports(method, self._machine(found.group(1)), found.group(2), found.group(3) is not None, body)
 
-        found = re.match(r"^/v1/machines/([^/]+)(?:/([a-z]+))?$", path)
+        found = re.match(r"^/v1/machines/([^/]+)(?:/([a-z-]+))?$", path)
         if not found:
             raise Problem(404, "not_found", "no such route")
         mid, action = found.group(1), found.group(2)
@@ -1084,6 +1087,21 @@ class FakeAPI:
                     "created_at": "2026-10-23T07:00:00Z"}
             self.backups.append(made)
             return 201, made, {}
+        if method == "GET" and action == "repositories":
+            return 200, {"object": "list", "data": self.repositories, "protected_branches": ["main", "master", "release/**"]}, {}
+        if method == "POST" and action == "pull-requests":
+            b = _only(body, ("repository", "host", "head", "base", "title", "body", "draft"))
+            for r in self.repositories:
+                if r["repository"] == b.get("repository") and r["access"] == "write":
+                    made = {"object": "pull_request", "opened": True, "provider": r["provider"], "host": r["host"], "repository": r["repository"],
+                            "head": b["head"], "base": b["base"], "draft": b.get("draft", False), "number": None, "url": None, "run": None, "note": None}
+                    if r["provider"] == "gitlab":
+                        made.update(opened=False, run="git push -o merge_request.create origin " + b["head"], note="Nothing is open yet.")
+                        return 200, made, {}
+                    number = self._next()
+                    made.update(number=number, url="https://%s/%s/pull/%d" % (r["host"], r["repository"], number))
+                    return 201, made, {}
+            raise Problem(404, "not_found", "this machine does not reach that repository")
         if method == "GET" and action == "metrics":
             step = one("step") or "60"
             if step not in ("60", "300", "3600"):

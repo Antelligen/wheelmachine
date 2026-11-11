@@ -116,6 +116,10 @@ its team, an owner or an admin: `machines.fork` answers it with the request, and
   is made from one, starting afresh, at the machine's size or another: `client.machines.fork(machine.id,
   backup=backup, cpus=8)`, or `backup="latest"` for its newest. `client.machines.backups(machine.id)` lists a
   machine's, the newest first, and `client.machines.backups()` every one the key reaches.
+- **Pull requests**: `client.machines.repositories(machine.id)` says what a machine reaches and whether a push will go,
+  and `client.machines.open_pull_request(machine.id, "acme/api", head="agent/a", base="main", title="...")` opens one on
+  GitHub. On GitLab its `run` is the line of git that opens it: run it in the clone in the machine. It does not merge,
+  approve or close anything: people do.
 - **Answers** are typed objects with the API's own field names; each keeps its JSON in `raw`, and one a call answered
   with says how it came in `last_response` (`request_id`, `replayed`, `rate_limit`).
 - **What a machine used**: `client.machines.metrics(machine.id, since="6h", step=300)` gives its CPUs (a share
@@ -161,6 +165,25 @@ and `path`, where it lands (`/` by default). A link's `url` is in that answer on
 already is made public or private as asked, so `open` is sent again after a lost connection; `link` never is once
 it may have reached the API, not even when refused for a moment, since each call makes a new link. A machine has at
 most 20 ports open, and the few it uses itself cannot be opened.
+
+## Deploy
+
+An app put on the internet from a repository of your connections, a public repository's https address, or a folder, on
+a machine of its own at a public address. It is charged as any machine is, builds included, and pauses once nobody has
+visited for 30 minutes and its app is quiet, unless `keep_awake=True`; the next visit wakes it. One made from a team's
+machine type pauses as the type says.
+
+```python
+app = client.deployments.create(upload=True, build="npm ci", start="npm start", port=3000)
+sent = client.deployments.send_folder(app.id, "./shop")  # without keys, tokens and settings: sent.left_out names them
+app = client.deployments.wait(app.id)
+print(app.state, app.url)  # live, and its address
+client.deployments.redeploy(app.id)  # a build that fails leaves the live version running
+client.deployments.delete(app.id)  # and its machine, with all its files
+```
+
+`client.deployments.folder_files("./shop")` says what `send_folder()` would send, and sends nothing. See
+https://docs.wheelmachine.ai/deploy.html.
 
 ## Apps
 

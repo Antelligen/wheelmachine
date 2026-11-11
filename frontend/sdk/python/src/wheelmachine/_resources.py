@@ -33,6 +33,7 @@ from ._models import (DeployBranches, DeployGuess, DeployLog, DeployRepo, Deploy
     KeyCreated,
     Machine,
     MachineMetrics,
+    MachineRepositories,
     MachineRequest,
     MachineState,
     ModelList,
@@ -41,6 +42,7 @@ from ._models import (DeployBranches, DeployGuess, DeployLog, DeployRepo, Deploy
     Port,
     PortLink,
     Project,
+    PullRequest,
     Scope,
     Secret,
     SecretPreset,
@@ -257,7 +259,8 @@ class Machines(_Resource):
 
         ``region`` is an id from ``client.regions()``, ``gpu`` one from ``client.gpus()``; ``cpus`` is 2, 4 or 8 (2 by
         default; 16 is not offered yet), with 2 GB of memory each - not with ``gpu``, whose size comes with it. It
-        pauses by itself once it is idle - nothing has reached it for ``idle_after_s`` seconds (300 by default) and its
+        pauses by itself once it is idle - nothing has reached it for ``idle_after_s`` seconds (1800 by default, half an
+        hour, and never less; up to 86400) and its
         programs have been quiet as long, so a job left running keeps it going; with ``sleep_when_idle=False`` it never
         pauses by itself, and runs (and is charged) until it is paused or stopped. ``secrets`` names the account's
         secrets every command run in it gets as environment variables (``client.secrets``); giving them needs a key
@@ -565,6 +568,41 @@ class Machines(_Resource):
         path = "/v1/backups" if machine_id is None else "/v1/machines/{}/backups".format(_id(machine_id, "machine_id"))
         data, _ = self._client._json("GET", path, query=[("limit", str(limit))] if limit is not None else [])
         return [Backup.from_dict(b) for b in _items(data)]
+
+    def repositories(self, machine_id: str) -> MachineRepositories:
+        """The GitHub and GitLab repositories a machine reaches now, each to read or to push too, and whether a push will
+        go: its holder's own account linked there, or on a company's own GitLab none needed. Those in its team who reach it
+        may ask, and its organisation's owners and admins."""
+        data, info = self._client._json("GET", "/v1/machines/{}/repositories".format(_id(machine_id, "machine_id")))
+        return _answered(MachineRepositories.from_dict(data or {}), info)
+
+    def open_pull_request(
+        self,
+        machine_id: str,
+        repository: str,
+        *,
+        head: str,
+        base: str,
+        title: str,
+        body: Optional[str] = None,
+        draft: bool = False,
+        host: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> PullRequest:
+        """Opens a pull request from a branch of a repository the machine may push to. Only the person who holds the machine
+        may ask. This does not merge, approve or close anything: people do. ``head`` is a branch of the same repository that
+        the team's machines may push to; ``base`` may be a protected one; ``host`` says which, only where the same path is on
+        two hosts. On GitHub it is open now, under the holder's own linked account. On GitLab ``opened`` is False, and ``run`` is
+        the line of git to run in the clone in the machine, which opens a merge request as it pushes; a body with a line
+        beginning with ``/`` is refused there, as GitLab would run that line as a command. Like ``create``, a retry never
+        makes two."""
+        data, info = self._client._json(
+            "POST",
+            "/v1/machines/{}/pull-requests".format(_id(machine_id, "machine_id")),
+            payload=_given(repository=repository, host=host, head=head, base=base, title=title, body=body, draft=draft or None),
+            idempotency_key=_key(idempotency_key),
+        )
+        return _answered(PullRequest.from_dict(data or {}), info)
 
     def wait(self, machine_id: str, state: MachineState = "running", *, timeout_s: float = 60.0) -> Machine:
         """Answers when the machine is in ``state`` (at once when it already is). Raises WaitTimeoutError when it
@@ -1273,9 +1311,7 @@ def _tar_entry(name: str, found: os.stat_result, kind: bytes) -> tarfile.TarInfo
 
 class Deployments(_Resource):
     """``client.deployments``: apps put on the internet from a repository on GitHub or GitLab, the https address of a
-    public one, or files, each on a machine of its own at a public address.
-
-    Not open yet: until Deploy opens, each call raises an error whose code is ``not_open``."""
+    public one, or files, each on a machine of its own at a public address."""
 
     def create(
         self,
@@ -1340,8 +1376,8 @@ class Deployments(_Resource):
         port: Optional[int] = None,
         keep_awake: Optional[bool] = None,
     ) -> Deployment:
-        """Changes its settings. Its name, branch, commands and port apply from its next run; ``keep_awake`` at once.
-        Only the person who deployed it can."""
+        """Changes its settings. Its name and its machine's change at once, as does ``keep_awake``; its branch, commands
+        and port apply from its next run. Only the person who deployed it can."""
         payload = _given(name=name, branch=branch, build=build, start=start, port=_port(port) if port is not None else None, keep_awake=keep_awake)
         data, info = self._client._json("PATCH", "/v1/deployments/" + _id(deployment_id, "deployment_id"), payload=payload)
         return _answered(Deployment.from_dict(data or {}), info)

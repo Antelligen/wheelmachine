@@ -272,12 +272,11 @@ class Deployments(APITest):
         branches = self.client.deployments.branches(connection="code_1", repo="acme/shop")
         self.assertEqual((branches.default, branches.known, [b.name for b in branches.data]), ("main", True, ["main"]))
 
-    def test_until_deploy_opens_each_call_says_so(self) -> None:
+    def test_a_call_while_deploy_is_shut_says_so(self) -> None:
         self.api.deploy_closed = True
         with self.assertRaises(WheelmachineError) as told:
             self.client.deployments.list()
         self.assertEqual(getattr(told.exception, "code", None), "not_open")
-        self.assertIn("Not open yet", self.client.deployments.__doc__ or "")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,22 @@
 
 `wheelmachine`, the Wheelmachine library for Python. Each release is tagged `py-v<version>`.
 
+## 0.1.4
+
+- Deploy is open: `client.deployments` puts an app on the internet from a repository of your connections, a public
+  repository's https address or a folder (`send_folder()`), on a machine of its own at a public address, and follows,
+  reads, changes, redeploys and deletes it. Its calls no longer say they are not open yet.
+- `client.machines.repositories()` says which repositories a machine reaches, to read or to push too, and whether a push
+  will go, and `client.machines.open_pull_request()` opens a pull request from a branch: on GitHub at once, under the name
+  of the person who holds the machine, and on GitLab its `run` is the line of git to run in the machine's clone, which
+  opens a merge request as it pushes. Only the person who holds the machine may open one, a retry never opens two, and
+  neither call merges, approves or closes anything. They answer `MachineRepositories` and `PullRequest`.
+- A machine pauses no sooner than 30 minutes idle, and one set to less now waits 30 minutes: `machines.create()`'s
+  `idle_after_s` is 1800 when left out, where it was 300, and less is refused.
+- A machine whose internet is `"closed"` now has none, in or out, and no name lookups: a public port of it answers only
+  as a private one. Whatever a machine's internet, its team's repositories and folders still work where given.
+  `NetworkPolicy.internet` says so.
+
 ## 0.1.3
 
 - A machine's desktop, seen and worked: `client.machines.screenshot()` gives a picture of it (`ScreenPicture`, whose

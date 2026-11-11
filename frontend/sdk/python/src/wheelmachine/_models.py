@@ -613,8 +613,9 @@ class NetworkPolicy(APIObject):
     """What a machine may reach on the internet."""
 
     internet: str
-    """``"open"`` (the whole internet), ``"closed"`` (no internet, though name lookups and some sites we host still
-    work), or ``"allowed"`` (only ``allow``)."""
+    """``"open"`` (the whole internet), ``"closed"`` (no internet in or out and no name lookups: a public port
+    answers only as a private one), or ``"allowed"`` (only ``allow``). Whatever it is, your team's repositories and
+    folders still work where given."""
     allow: List[str]
     """For ``"allowed"``: names (exact, or a leading ``*.``) for HTTP and HTTPS, IPv4/IPv6 ranges (CIDRs) for other ports."""
 
@@ -1798,6 +1799,80 @@ class Code(APIObject):
     def from_dict(cls, d: Mapping[str, Any]) -> "Code":
         return _stamp(cls(github=_bool(d, "github"), connections=[CodeConnection.from_dict(c) for c in _list(d, "connections")],
                           grants=[CodeGrant.from_dict(g) for g in _list(d, "grants")]), d)
+
+
+@dataclass
+class CodePush(APIObject):
+    """A team's own rule for pushes to a repository: the branches its machines push to, none for any the account allows,
+    and whether its tags too."""
+
+    branches: List[str]
+    tags: bool
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "CodePush":
+        return _stamp(cls(branches=_strs(d, "branches"), tags=_bool(d, "tags")), d)
+
+
+@dataclass
+class MachineRepository(APIObject):
+    """A repository a machine reaches: to ``read``, or to ``write`` (push) too."""
+
+    provider: str
+    """``github`` or ``gitlab``."""
+    host: str
+    repository: str
+    """Its path on its host, such as ``acme/api``."""
+    access: str
+    linked: bool
+    """Whether the person who holds the machine has their own account linked there, and it still works."""
+    can_push: bool
+    """Whether a push will go: to ``write``, with their account linked - or none needed, on a company's own GitLab."""
+    push: Optional[CodePush]
+    """The team's own rule for pushes to it; None for any branch the account does not protect, and its tags."""
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "MachineRepository":
+        push = d.get("push")
+        return _stamp(cls(provider=_str(d, "provider"), host=_str(d, "host"), repository=_str(d, "repository"), access=_str(d, "access"),
+                          linked=_bool(d, "linked"), can_push=_bool(d, "can_push"), push=CodePush.from_dict(push) if isinstance(push, Mapping) else None), d)
+
+
+@dataclass
+class MachineRepositories(APIObject):
+    """The repositories a machine reaches now, and the branches no machine of the account pushes to."""
+
+    data: List[MachineRepository]
+    protected_branches: List[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "MachineRepositories":
+        return _stamp(cls(data=[MachineRepository.from_dict(r) for r in _list(d, "data")], protected_branches=_strs(d, "protected_branches")), d)
+
+
+@dataclass
+class PullRequest(APIObject):
+    """A pull request opened from a machine (``opened``, on GitHub: its ``number`` and ``url``) - or, on GitLab, ``run``:
+    the line of git to run in the clone in the machine, which opens a merge request as it pushes, and a ``note`` saying
+    so."""
+
+    opened: bool
+    provider: str
+    host: str
+    repository: str
+    head: str
+    base: str
+    draft: bool
+    number: Optional[int]
+    url: Optional[str]
+    run: Optional[str]
+    note: Optional[str]
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "PullRequest":
+        return _stamp(cls(opened=_bool(d, "opened"), provider=_str(d, "provider"), host=_str(d, "host"), repository=_str(d, "repository"),
+                          head=_str(d, "head"), base=_str(d, "base"), draft=_bool(d, "draft"), number=_opt_int(d, "number"), url=_opt_str(d, "url"),
+                          run=_opt_str(d, "run"), note=_opt_str(d, "note")), d)
 
 
 @dataclass

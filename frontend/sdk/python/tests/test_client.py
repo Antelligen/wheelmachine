@@ -186,7 +186,7 @@ class Machines(APITest):
 
     def test_a_machine_pauses_when_idle_unless_it_is_made_not_to(self) -> None:
         m = self.client.machines.create()
-        self.assertEqual((m.sleep_when_idle, m.idle_after_s), (True, 300))
+        self.assertEqual((m.sleep_when_idle, m.idle_after_s), (True, 1800))
         m = self.client.machines.create(idle_after_s=3600)
         self.assertEqual(self.api.requests("POST", "^/v1/machines$")[-1].json(), {"idle_after_s": 3600})
         self.assertEqual((m.sleep_when_idle, m.idle_after_s), (True, 3600))
