@@ -56,6 +56,29 @@ func TestHelpOffersDeployOnlyOnceItOpens(t *testing.T) {
 	}
 }
 
+// Once Deploy is open, wm's help lists its commands in the column the others are in: a name too long for it has its
+// words on the next line.
+func TestHelpListsDeploysCommandsInTheColumnOfTheRest(t *testing.T) {
+	if !api.DeployOpen {
+		t.Skip("Deploy is not open")
+	}
+	h := newHarness(t)
+	out := h.wm("", "-h").must(t, 0).stdout
+	at := strings.Index(out, "list, make, pause")
+	_, part, _ := strings.Cut(out, "\nDeploy:\n")
+	part, _, _ = strings.Cut(part, "\n\n")
+	if at < 0 || part == "" {
+		t.Fatalf("%s", out)
+	}
+	// (the column of the machines' first line)
+	col := at - (strings.LastIndex(out[:at], "\n") + 1)
+	for _, line := range strings.Split(part, "\n") {
+		if len(line) > col && (line[col-1] != ' ' || line[col] == ' ') {
+			t.Errorf("%q is not in the column at %d", line, col)
+		}
+	}
+}
+
 func TestDeploySaysItIsNotOpen(t *testing.T) {
 	h := newHarness(t)
 	h.api.Deploy.Closed = true

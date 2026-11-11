@@ -163,7 +163,7 @@ flags:
 	case "deploy":
 		return a.deployCmd(ctx, rest)
 	case "deployments":
-		return a.group(ctx, "deployments", deployWords(deploymentsHelp), deploymentCommands, rest)
+		return a.group(ctx, "deployments", deploymentsHelp, deploymentCommands, rest)
 	case "ports":
 		return a.group(ctx, "ports", portsHelp, portCommands, rest)
 	case "apps":
@@ -277,7 +277,7 @@ func (a *app) printHelp() {
 		if kind != "" {
 			name += " " + kind
 		}
-		// a zero is no default of its own: the flag left out means what its words say (--idle-after: 5m)
+		// a zero is no default of its own: the flag left out means what its words say (--idle-after: 30m)
 		if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" && f.DefValue != "0s" && f.DefValue != "[]" {
 			usage += " (" + f.DefValue + ")"
 		}

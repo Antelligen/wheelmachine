@@ -118,3 +118,87 @@ func (c *Client) GrantCode(ctx context.Context, project, connection, repo, acces
 func (c *Client) RevokeCode(ctx context.Context, project, grant string) error {
 	return c.decode(ctx, call{method: http.MethodDelete, path: "/v1/projects/" + url.PathEscape(project) + "/code/" + url.PathEscape(grant), timeout: callTimeout}, nil)
 }
+
+// MachineRepository is a repository a machine reaches: to read, or to write too; whether its holder's own account is
+// linked there; and whether a push will go.
+type MachineRepository struct {
+	Object     string    `json:"object"`
+	Provider   string    `json:"provider"` // github or gitlab
+	Host       string    `json:"host"`
+	Repository string    `json:"repository"`
+	Access     string    `json:"access"` // read or write
+	Linked     bool      `json:"linked"`
+	CanPush    bool      `json:"can_push"`
+	Push       *CodePush `json:"push"`
+}
+
+// CodePush is a team's own rule for pushes to a repository.
+type CodePush struct {
+	Branches []string `json:"branches"`
+	Tags     bool     `json:"tags"`
+}
+
+// MachineRepositories is what a machine reaches, and the branches its pushes stay off.
+type MachineRepositories struct {
+	Object    string              `json:"object"`
+	Data      []MachineRepository `json:"data"`
+	Protected []string            `json:"protected_branches"`
+}
+
+// MachineRepositories lists the repositories a machine reaches now.
+func (c *Client) MachineRepositories(ctx context.Context, machine string) (*MachineRepositories, error) {
+	id, err := segment("machine", machine)
+	if err != nil {
+		return nil, err
+	}
+	var out MachineRepositories
+	if err := c.decode(ctx, call{method: http.MethodGet, path: "/v1/machines/" + id + "/repositories", timeout: callTimeout}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PullRequestCreate is a pull request to open from a branch of a repository a machine may write. Host says which, only
+// where the same path is on two hosts.
+type PullRequestCreate struct {
+	Repository     string `json:"repository"`
+	Host           string `json:"host,omitempty"`
+	Head           string `json:"head"`
+	Base           string `json:"base"`
+	Title          string `json:"title"`
+	Body           string `json:"body,omitempty"`
+	Draft          bool   `json:"draft,omitempty"`
+	IdempotencyKey string `json:"-"`
+}
+
+// PullRequest is a pull request opened (Opened, on GitHub: its Number and URL) or, on GitLab, the line of git that opens
+// a merge request as it pushes (Run), to run in the clone in the machine, and a Note saying so.
+type PullRequest struct {
+	Object     string  `json:"object"`
+	Opened     bool    `json:"opened"`
+	Provider   string  `json:"provider"` // github or gitlab
+	Host       string  `json:"host"`
+	Repository string  `json:"repository"`
+	Head       string  `json:"head"`
+	Base       string  `json:"base"`
+	Draft      bool    `json:"draft"`
+	Number     *int64  `json:"number"`
+	URL        *string `json:"url"`
+	Run        *string `json:"run"`
+	Note       *string `json:"note"`
+}
+
+// OpenPullRequest opens a pull request from a machine, or on GitLab says the line of git that opens one. Only the person who
+// holds the machine may ask. This does not merge, approve or close anything: people do.
+func (c *Client) OpenPullRequest(ctx context.Context, machine string, p PullRequestCreate) (*PullRequest, error) {
+	id, err := segment("machine", machine)
+	if err != nil {
+		return nil, err
+	}
+	var out PullRequest
+	cl := call{method: http.MethodPost, path: "/v1/machines/" + id + "/pull-requests", in: p, create: true, idemKey: p.IdempotencyKey, timeout: callTimeout}
+	if err := c.decode(ctx, cl, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

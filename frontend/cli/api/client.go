@@ -34,7 +34,7 @@ import (
 // Version is wm's, wm-mcp's and this module's version, sent in the User-Agent and shown by `wm --version`: the one
 // place it is kept. A release build stamps the same into the programs (-ldflags -X, release.py), from a tag that must
 // say it too.
-var Version = "0.1.4"
+var Version = "0.1.5"
 
 const (
 	// DefaultBaseURL is where the API is reached when WHEELMACHINE_BASE_URL says nothing else.

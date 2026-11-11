@@ -98,10 +98,23 @@ tags:
       while it starts). An address is private unless the port was opened `public`: it answers a call that carries
       an API key able to see the machine (`Authorization: Bearer ak_live_...`, which never reaches the program) and
       a browser that opened a link made for it; anyone else is answered 401, and an address of a port that is not
-      open, or of another account's machine, 404. In an organisation a link works only while the person who made it may still
+      open, or of another account's machine, 404. While the machine's internet is `closed`, a `public` address answers
+      only as a private one does, and what anyone else had open at it ends; it is public again once the machine is
+      opened. In an organisation a link works only while the person who made it may still
       use the machine. A WebSocket at a private address ends when its key is revoked, its person is taken out or loses
       access, or the account is on hold. A private address's pages may be framed by the dashboard and no other site; a
       public address's pages are framed as their program says.
+  - name: Deploy
+    description: |
+      Put an app on the internet from a repository on GitHub or GitLab, the https address of a public repository, or
+      files. Each deployment runs on a machine of its own, at a public address:
+      `https://<port>-<the machine's id without m_>.run.wheelmachine.ai`. The code is fetched inside the machine, and a
+      repository of one of your connections needs no token there. It is built and started. Once it answers at its port,
+      with any status, that port is public and the deployment is `live`. A build that fails leaves the live version
+      running. Once built, a new version takes the live one's place: the live one stops first, and a new version that
+      does not answer within two minutes is replaced by the last one. The machine pauses once nobody visits
+      and the app is quiet, unless `keep_awake` is on, and the next visit wakes it. It is charged as any machine: the
+      time it runs, builds included. An account keeps at most 20 deployments.
   - name: Apps
     description: |
       Programs a machine carries: a desktop and a code editor in the browser and an agent's own web page (`web`), a
@@ -1726,9 +1739,12 @@ paths:
       operationId: createMachines
       summary: Make machines for people
       description: |
-        In an organisation: machines of one of a team's types (`GET /v1/projects/{project_id}/types`), for people of the
-        team - those named in `people`, or `everyone` in it - `each` for each of them, named by the `names` pattern. Owners
-        and admins make them for anyone; a team's managers for its plain members; a member for themselves. What the
+        In an organisation: machines of one of a team's types (`GET /v1/projects/{project_id}/types`) - or, with no `type`,
+        made as the call says, the way one machine is (`cpus` or `gpu`, `network`, `sleep_when_idle`, `idle_after_s`,
+        `put_away_after_s`; each as a new machine's when left out) - for people of the team - those named in `people`, or
+        `everyone` in it - `each` for each of them, named by the `names` pattern. Owners and admins make them for anyone; a
+        team's managers for its plain members; a member for themselves. In a team whose `types_only` rule is on, its members
+        and managers make them from a type alone. What the
         organisation and the team may spend is held for the whole batch before anything is made (`402`); then each
         machine is answered on its own - made, on its way or refused (a person's limit, a team's rule, or none available just now) - and one
         refused leaves the others made. Each is its person's own from the start: they hold it, its limits are theirs,
@@ -1751,7 +1767,7 @@ paths:
               schema: { $ref: "#/components/schemas/MachineBatch" }
         "400":
           $ref: "#/components/responses/BadRequest"
-          description: "No such type in the team; a person named who is nobody here, or more than one; more than 100 machines"
+          description: "No such type in the team; a type's field beside a type, or a size or idle time no machine is made with; a person named who is nobody here, or more than one; more than 100 machines"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "402":
           $ref: "#/components/responses/PaymentRequired"
@@ -2861,6 +2877,97 @@ paths:
           $ref: "#/components/responses/NotImplemented"
           description: "This machine cannot list its folders"
 
+  /v1/machines/{machine_id}/repositories:
+    parameters:
+      - $ref: "#/components/parameters/MachineId"
+    get:
+      tags: [Machines]
+      operationId: listMachineRepositories
+      summary: The repositories a machine reaches
+      description: |
+        What its team was given on GitHub and GitLab, while its holder is in the team and its internet reaches the host:
+        each one's access, whether the person who holds the machine has linked their own account there, and whether a push
+        will go. Asked by those in its team who reach it, and its organisation's owners and admins. Someone who handed the
+        machine off to a team they are not in is refused.
+      responses:
+        "200":
+          description: What it reaches, and the branches no machine of the account pushes to
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, data, protected_branches]
+                properties:
+                  object: { type: string, enum: [list] }
+                  data: { type: array, items: { $ref: "#/components/schemas/MachineRepository" } }
+                  protected_branches: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/machines/{machine_id}/pull-requests:
+    parameters:
+      - $ref: "#/components/parameters/MachineId"
+    post:
+      tags: [Machines]
+      operationId: openPullRequest
+      summary: Open a pull request from a machine
+      description: |
+        From a branch of a repository the machine may push to. Only the person who holds the machine may ask. This does not
+        merge, approve or close anything: people do. `head` is a branch of the same repository that the team's machines may
+        push to, so no fork and no protected branch; `base` may be a protected branch.
+
+        On GitHub it opens under the holder's own linked account, and is answered `201`. For one person and repository at most 5
+        open a minute and about 60 an hour, with up to about 120 in a first hour, for one person 10 a minute, and for an account
+        20 a minute; what GitHub refuses uses up none of those, but for one person at most 30 a minute are asked of GitHub at all,
+        refused or not.
+
+        On GitLab nothing is opened here. It is answered `200` with `opened` false and `run`, the line of git to run in the clone
+        in the machine, which opens a merge request as it pushes and prints its address. That push has to send new commits, and
+        goes under the holder's linked account, or on a company's own GitLab its group's token, which needs no link. A line break
+        in `body` goes as `\n`, which GitLab reads as one. A body with a line beginning with `/`, with spaces before it or not, is
+        refused, as GitLab would run that line as a command: write `\/` to show one. So is a `title`, `body`, `head` or `base`
+        holding U+FFFD, the character that stands for unreadable text, as a machine's push may not carry it.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PullRequestCreate" }
+      responses:
+        "201":
+          description: Opened, on GitHub
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PullRequest" }
+        "200":
+          description: Not opened yet, on GitLab - the push that opens it
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PullRequest" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+          description: "What was asked cannot be a pull request, or on GitLab its body has a line beginning with `/`"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+          description: "The key lacks `cloud:machines:exec`; someone other than the person who holds the machine asked; or its team may only read the repository"
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "No such machine; this machine does not reach that repository; or GitHub does not show it to the linked account"
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: |
+            What a person must do first: link their own account, or link it again; accept the new permission on GitHub, or be
+            given write access there; push the branch; give the team a repository that has moved under its new name; or the head
+            is a branch the team's machines may not push to, or one is open already. Its words say which. Or the machine is being
+            handed off.
+        "422":
+          $ref: "#/components/responses/BadRequest"
+          description: "GitHub would not open it, in GitHub's words; or this `Idempotency-Key` was used with a different request"
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/Unavailable" }
   /v1/machines/{machine_id}/ports:
     parameters:
       - $ref: "#/components/parameters/MachineId"
@@ -2885,7 +2992,7 @@ paths:
       description: |
         Needs the `cloud:machines:write` scope. Private unless `public` is true. A port that is open already is
         answered `200`, made public or private as asked (left out, `public` is false). The ports the machine itself
-        uses (5900, 6080, 7070, 9222, 9223 and 9224) cannot be opened (`400`), and a machine has at most 20 open
+        uses (5900, 6080, 6903, 7070, 9222, 9223 and 9224) cannot be opened (`400`), and a machine has at most 20 open
         (`429` with the code `limit_reached`).
       requestBody:
         required: true
@@ -2961,6 +3068,408 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/deployments:
+    get:
+      tags: [Deploy]
+      operationId: listDeployments
+      summary: The deployments you see
+      description: |
+        Needs the `cloud:machines:read` scope. Those whose machines you can see, the newest first, each with its current
+        or last run.
+      parameters:
+        - name: project
+          in: query
+          description: Those of one team (a project) alone.
+          schema: { type: string, pattern: "^prj_[0-9a-z]{26}$" }
+      responses:
+        "200":
+          description: The deployments
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeploymentList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    post:
+      tags: [Deploy]
+      operationId: createDeployment
+      summary: Deploy an app
+      description: |
+        Needs the `cloud:machines:write` and `cloud:machines:exec` scopes, and `cloud:secrets:write` to give it secrets.
+        Your limits, your team's rules and its budget apply to its machine, as to any machine. Its first run goes on after
+        this answer: follow it with `GET /v1/deployments/{deployment_id}/wait`. The code comes from a repository of one of
+        your connections (`connection` and `repo`), a public repository's https address (`url`), or files (`upload`, then
+        `PUT /v1/deployments/{deployment_id}/files`). If you give your team repositories, one it does not have yet is given
+        to it to read first, and the audit says so, and it keeps it after the deployment is deleted; otherwise that is
+        refused (`404`). Of a machine's apps only the code editor runs on it, and it gets only the secrets named here, your
+        AI keys included, up to about 1 MB of them in all. A run with more ends and says so. It reaches the repository it
+        deploys, to read, and none of your team's other repositories or folders. If no machine is free, the run waits up to
+        two hours and says so in `note`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentCreate" }
+      responses:
+        "201":
+          description: Made; its first run begun
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "The `project` or the connection is not one you reach, or the repository is not one your team was given"
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "The first call with this `Idempotency-Key` is still running; or the connection is suspended"
+        "422":
+          $ref: "#/components/responses/BadRequest"
+          description: "This `Idempotency-Key` was used with a different request"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+          description: "Too many calls just now (`rate_limited`), or the account keeps as many deployments or machines as it may (`limit_reached`)"
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502":
+          $ref: "#/components/responses/Unavailable"
+          description: "GitHub or GitLab did not say what the connection reaches (`unavailable`); try again in a moment"
+
+  /v1/deployments/detect:
+    post:
+      tags: [Deploy]
+      operationId: detectDeployment
+      summary: How code most likely builds and starts
+      description: |
+        Needs the `cloud:machines:write` scope. A suggestion to change, read from a few of its files: a repository's, from
+        one of your connections or public on GitHub or GitLab, at `branch` or its default; or the files you are about to
+        send, by name. Nothing is read of a public repository anywhere else, and `runtime` is `unknown`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeployDetect" }
+      responses:
+        "200":
+          description: What it most likely builds and starts with
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployGuess" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502":
+          $ref: "#/components/responses/Unavailable"
+          description: "GitHub or GitLab did not answer just now (`unavailable`); try again in a moment"
+
+  /v1/deployments/repos:
+    get:
+      tags: [Deploy]
+      operationId: listDeployRepos
+      summary: The repositories you may deploy into a team
+      description: |
+        Needs the `cloud:machines:write` scope. Those the team has (`shared`) and, if you give the team repositories, the
+        rest of what each of the account's connections reaches: deploying one gives it to the team to read first (`shared`
+        false). The most recently pushed to first.
+      parameters:
+        - name: project
+          in: query
+          description: The team (a project); your first when left out.
+          schema: { type: string, pattern: "^prj_[0-9a-z]{26}$" }
+        - name: connection
+          in: query
+          description: One connection's alone.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The repositories
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployRepoList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502":
+          $ref: "#/components/responses/Unavailable"
+          description: "GitHub or GitLab did not say what a connection reaches (`unavailable`); try again in a moment"
+
+  /v1/deployments/branches:
+    get:
+      tags: [Deploy]
+      operationId: listDeployBranches
+      summary: A repository's branches
+      description: |
+        Needs the `cloud:machines:write` scope. Those of a repository of one of your connections (`connection` and `repo`),
+        or of a public one on GitHub or GitLab (`url`), and which is its default. For a public repository anywhere else
+        none are read: `known` is false, and you type the branch.
+      parameters:
+        - name: connection
+          in: query
+          schema: { type: string }
+        - name: repo
+          in: query
+          description: The repository's path on its host, such as `acme/shop`.
+          schema: { type: string }
+        - name: url
+          in: query
+          description: A public repository's https address.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Its branches
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployBranchList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "No such connection, or the repository could not be read: it is not there, it is private, or it isn't shared with a team of yours"
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "502":
+          $ref: "#/components/responses/Unavailable"
+          description: "GitHub or GitLab did not answer just now (`unavailable`); try again in a moment"
+
+  /v1/deployments/{deployment_id}:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [Deploy]
+      operationId: getDeployment
+      summary: A deployment
+      description: |
+        Needs the `cloud:machines:read` scope. Its commands, and what a failure quotes of its logs, are shown only to
+        whoever uses its machine, with a key that holds `cloud:machines:exec`.
+      responses:
+        "200":
+          description: The deployment, with its current or last run
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    patch:
+      tags: [Deploy]
+      operationId: updateDeployment
+      summary: Change a deployment's settings
+      description: |
+        Needs the `cloud:machines:write` scope, and `cloud:machines:exec` to change its branch, commands or port. Only the
+        person who deployed it can. Its name changes at once, and its machine's with it; `health_path` from its next check.
+        Its branch, commands and port apply from its next run: the live version stays as it is until it is redeployed, and
+        a new port changes its address then. `keep_awake` applies at once, and wakes its machine for a moment if it is
+        paused. Its secrets are its machine's (`PATCH /v1/machines/{machine_id}`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentChange" }
+      responses:
+        "200":
+          description: Changed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "Its machine is deleted"
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Deploy]
+      operationId: deleteDeployment
+      summary: Delete a deployment, and its machine
+      description: |
+        Needs the `cloud:machines:write` scope: the person who deployed it, and in an organisation its owners and admins
+        and its team's managers. Its machine goes with it, and its address answers nothing from then on. A repository given
+        to its team for it stays with the team: take it away on the Code page.
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/deployments/{deployment_id}/redeploy:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    post:
+      tags: [Deploy]
+      operationId: redeployDeployment
+      summary: Redeploy
+      description: |
+        Needs the `cloud:machines:write` and `cloud:machines:exec` scopes. Only the person who deployed it can. Fetches its
+        branch as it is now, or uses its files again, then builds it. A build that fails leaves the live version running.
+        Once built, the live version stops and the new one starts: its address does not answer until the new one does, and
+        one that does not answer within two minutes is replaced by the last one. A deployment has one run at a time.
+      responses:
+        "202":
+          description: Its run begun
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "A run of it is under way; its machine is deleted; it has no files yet; or the person who deployed it is no longer in its team"
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/deployments/{deployment_id}/files:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    put:
+      tags: [Deploy]
+      operationId: uploadDeploymentFiles
+      summary: Send a deployment's files
+      description: |
+        Needs the `cloud:machines:exec` and `cloud:machines:write` scopes, and a `Content-Length`. Only the person who
+        deployed it can. One tar archive, or a gzipped one, of the app's files. Each entry is a file or a folder with a path
+        inside the folder sent (no `..`, no path from `/`, at most 255 bytes and 32 folders deep): no link, device or pipe.
+        At most 20,000 files, 100 MB a file and 500 MB in all. The first entry refused ends it (`400` or `413`, naming it),
+        and nothing of it is kept. The bytes must keep coming: an upload that stalls or crawls ends (`408`), as does an hour
+        in all.
+        These may be its first files, or new ones in place of its last. It is then built and started, as a redeploy is.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        "202":
+          description: In its machine; its build begun
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408":
+          $ref: "#/components/responses/Timeout"
+          description: "The files stopped coming; send them again"
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "Its code comes from a repository; a run of it is under way; or its machine is not ready yet"
+        "411": { $ref: "#/components/responses/BadRequest" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+          description: "As many uploads are going at once as may (`rate_limited`), or starting its machine would run more CPUs at once than its account may (`limit_reached`)"
+        "501": { $ref: "#/components/responses/NotImplemented" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/deployments/{deployment_id}/wait:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [Deploy]
+      operationId: waitForDeployment
+      summary: Answer once its current run has ended
+      description: Needs the `cloud:machines:read` scope. Its `state` and its run say how it ended.
+      parameters:
+        - name: timeout_s
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 600, default: 60 }
+      responses:
+        "200":
+          description: It has no run going now
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Deployment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "408":
+          $ref: "#/components/responses/Timeout"
+          description: "It is still deploying; wait again"
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/deployments/{deployment_id}/runs:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [Deploy]
+      operationId: listDeploymentRuns
+      summary: A deployment's runs
+      description: Needs the `cloud:machines:read` scope. The last 20, the newest first.
+      responses:
+        "200":
+          description: Its runs
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployRunList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /v1/deployments/{deployment_id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentId"
+    get:
+      tags: [Deploy]
+      operationId: getDeploymentLogs
+      summary: A deployment's logs
+      description: |
+        Needs the `cloud:machines:exec` scope. Only the person who deployed it can. A run's own log (`build`: fetching its
+        code and building it), its last 256 KB; or the end of what the app itself writes (`app`), which wakes its machine.
+        A secret of at least 6 characters, printed as it is, shows by its name. A shorter one, or one printed any other way,
+        such as encoded, is not recognised, so don't print secrets.
+      parameters:
+        - name: kind
+          in: query
+          schema: { type: string, enum: [build, app], default: build }
+        - name: run
+          in: query
+          description: With `build`, a run's own; its last run's when left out.
+          schema: { type: string, pattern: "^dpr_[0-9a-z]{26}$" }
+      responses:
+        "200":
+          description: The log
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeployLog" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "402": { $ref: "#/components/responses/PaymentRequired" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "Its machine is deleted"
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
   /v1/machines/{machine_id}/apps:
@@ -4421,6 +4930,333 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /v1/login/agents/lookup:
+    post:
+      tags: [Sign-in]
+      operationId: lookupAgentSignIn
+      summary: What an agent asking to connect will get
+      description: |
+        The dashboard's own, signed in, on the page an agent's app sends the person to. It says who asks, where it returns to and
+        what it will get in the account chosen: what it asked, of what an agent's sign-in may ever hold, narrowed to what the person
+        holds there. `name` is what the app says of itself where `name_is_claim` is true, and `logo` is ours, for an app we know: no
+        picture an app names for itself is ever used.
+      security:
+        - session: []
+          csrf: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentSignInDecision" }
+      responses:
+        "200":
+          description: The agent's sign-in, waiting
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSignInAsk" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /v1/login/agents/approve:
+    post:
+      tags: [Sign-in]
+      operationId: approveAgentSignIn
+      summary: Allow an agent
+      description: |
+        The dashboard's own, signed in: a press on its page. The answer says where to send the browser, with a code for the app. An app
+        we do not know also needs `trusted_address`, its `returns_to` said back, and the code we e-mail you for it (`X-Confirm-Code`, see
+        `POST /v1/confirm-codes`).
+      security:
+        - session: []
+          csrf: []
+      parameters:
+        - $ref: "#/components/parameters/ConfirmCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentSignInDecision" }
+      responses:
+        "200":
+          description: Allowed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSignInAnswer" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /v1/login/agents/deny:
+    post:
+      tags: [Sign-in]
+      operationId: denyAgentSignIn
+      summary: Decline an agent
+      description: Nothing is given. The answer says where to send the browser, unless the app is one we do not know.
+      security:
+        - session: []
+          csrf: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentSignInDecision" }
+      responses:
+        "200":
+          description: Declined
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentSignInAnswer" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+
+  /v1/connected-agents:
+    get:
+      tags: [Sign-in]
+      operationId: listConnectedAgents
+      summary: The agents connected through the browser
+      description: |
+        In the account the call acts in: your own and, for an organisation's owners and admins, everyone's. As keys are: signed in with a
+        role that may make keys, or with a key that holds `cloud:keys:write`.
+      responses:
+        "200":
+          description: The connected agents
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, data]
+                properties:
+                  object: { type: string, const: list }
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ConnectedAgent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /v1/connected-agents/{agent_id}:
+    delete:
+      tags: [Sign-in]
+      operationId: disconnectAgent
+      summary: Disconnect an agent
+      description: Its tokens stop working at once. Another person's, unless you are an owner or admin, and one there is not are answered alike.
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Disconnected }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [Agents]
+      operationId: getAgentResourceDocument
+      summary: The MCP server's sign-in document, at the root
+      description: As at `/.well-known/oauth-protected-resource/mcp`.
+      security: []
+      responses:
+        "200":
+          description: The document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentResourceDocument" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags: [Agents]
+      operationId: getAgentResourceDocumentForMcp
+      summary: The MCP server's sign-in document
+      description: Protected resource metadata (RFC 9728), which a `401` from `/mcp` points to.
+      security: []
+      responses:
+        "200":
+          description: The document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentResourceDocument" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [Agents]
+      operationId: getAgentServerDocument
+      summary: How an agent signs in
+      description: Authorization server metadata (RFC 8414).
+      security: []
+      responses:
+        "200":
+          description: The document
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /oauth/authorize:
+    get:
+      tags: [Agents]
+      operationId: authorizeAgent
+      summary: Where an agent's app sends the person
+      description: |
+        On https://app.wheelmachine.ai. OAuth's authorization endpoint: `response_type=code`, `code_challenge` with
+        `code_challenge_method=S256`, `client_id`, `redirect_uri`, and `state`, `scope` and `resource` as the app likes. It sends the browser
+        on to the page where the person decides; a person always presses, so `prompt=none` is refused. A web address must be one the app
+        gave, exactly; an address on the person's own computer (`http://127.0.0.1`, `http://[::1]` or `http://localhost`) may have any port.
+        Every answer to the app carries `iss`. What cannot be sent back is said on our own page, and nothing goes to an address we do not know
+        unless the person allowed it.
+      security: []
+      responses:
+        "302": { description: On to the page; or back to the app, with `error` and `iss` }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /oauth/register:
+    post:
+      tags: [Agents]
+      operationId: registerAgentClient
+      summary: An agent's app registers itself
+      description: |
+        Dynamic client registration (RFC 7591), with no key and no sign-in, at most 5 a minute from one address. All it says of itself stays only that. No
+        secret is given: an app proves itself with what it began each sign-in with. `redirect_uris` are https, or http on the person's own
+        computer. An app can also skip this, and name its own metadata document by its address as `client_id`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                redirect_uris: { type: array, items: { type: string } }
+                client_name: { type: string }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [client_id, redirect_uris, token_endpoint_auth_method]
+                properties:
+                  client_id: { type: string }
+                  client_id_issued_at: { type: integer }
+                  client_name: { type: string }
+                  redirect_uris: { type: array, items: { type: string } }
+                  token_endpoint_auth_method: { type: string, const: none }
+                  grant_types: { type: array, items: { type: string } }
+                  response_types: { type: array, items: { type: string } }
+        "400":
+          description: "`invalid_redirect_uri` or `invalid_client_metadata`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429":
+          description: Too many registered just now
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+
+  /oauth/token:
+    post:
+      tags: [Agents]
+      operationId: getAgentToken
+      summary: An agent's app gets its tokens
+      description: |
+        A form (`application/x-www-form-urlencoded`). `grant_type=authorization_code` with `code`, `code_verifier` and `client_id`; a code works once, for two minutes. Or
+        `grant_type=refresh_token` with `refresh_token` and `client_id`: each answer has a new pair, and the old refresh token is spent. A refresh token used again within 10 seconds of its
+        first use gets a new pair too, in case the first answer was lost; used later, it ends the whole sign-in. An access token lasts an hour and works on `/mcp` alone. `400 invalid_grant` means connect
+        again; a `5xx` means try again, and nothing was lost.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type: { type: string, enum: [authorization_code, refresh_token] }
+                client_id: { type: string }
+                code: { type: string }
+                code_verifier: { type: string }
+                redirect_uri: { type: string }
+                refresh_token: { type: string }
+                resource: { type: string }
+      responses:
+        "200":
+          description: The tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, token_type, expires_in, refresh_token, scope]
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, const: Bearer }
+                  expires_in: { type: integer }
+                  refresh_token: { type: string }
+                  scope: { type: string, description: "What it holds: what it asked, narrowed to what the person holds." }
+        "400":
+          description: "`invalid_grant`, `invalid_target`, `invalid_request` or `unsupported_grant_type`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+        "401":
+          description: "`invalid_client`"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429":
+          description: Too many calls from here just now
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+        "503":
+          description: Try again in a moment (`temporarily_unavailable`); nothing was lost
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+
+  /oauth/revoke:
+    post:
+      tags: [Agents]
+      operationId: revokeAgentToken
+      summary: An agent's app signs itself out
+      description: Token revocation (RFC 7009), a form with `token`. Either of its tokens ends the whole sign-in. A token that is not one is answered the same.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                token_type_hint: { type: string }
+                client_id: { type: string }
+      responses:
+        "200": { description: Done }
+        "400":
+          description: The form cannot be read, or the token is another app's
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenError" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/session:
     delete:
       tags: [Sign-in]
@@ -4442,9 +5278,10 @@ paths:
       description: |
         These steps need a 6-digit code we e-mail you: closing your account; deleting an organisation, and transferring one
         to another owner - each its primary owner's alone; making someone an owner, by their role or by an
-        invitation, and sending an owner's invitation again; and making a key with full access (`cloud:*`), one that
+        invitation, and sending an owner's invitation again; making a key with full access (`cloud:*`), one that
         makes keys (`cloud:keys:write`) or one that gives secrets (`cloud:secrets:write`) - by a key or signed in, and for
-        a program given any of these as it signs in through the browser. Made without it, the step is refused with `403 confirm_required`, and the error's `confirm` says
+        a program given any of these as it signs in through the browser; and allowing an agent's app we do not know
+        (`POST /v1/login/agents/approve`). Made without it, the step is refused with `403 confirm_required`, and the error's `confirm` says
         what the code must be for: send that here, and the code goes to your e-mail address. Then make the same call
         again with it in `X-Confirm-Code`.
 
@@ -5089,7 +5926,7 @@ paths:
     get:
       tags: [Folders]
       operationId: downloadFolderFile
-      summary: Download a file
+      summary: Download a file from a folder
       description: |
         The whole of it, or the one part a `Range` header asks for (206), as bytes to keep. An organisation downloads 32
         files at once at most, a person's own account 8: past that, `rate_limited` (429) until one is done. A download
@@ -5115,7 +5952,7 @@ paths:
     put:
       tags: [Folders]
       operationId: uploadFolderFile
-      summary: Upload a file
+      summary: Upload a file to a folder
       description: |
         The body is the file, with its `Content-Length`; it takes the place of the file at that path, and the folders it
         goes in are made as needed. Refused with `too_large` past 5 GB, and with `limit_reached` when the account would
@@ -5431,7 +6268,9 @@ paths:
         where each request carries its version and the client's capabilities in `params._meta`, and 2025-11-25,
         2025-06-18 and 2025-03-26, which begin with `initialize`; a request whose params carry no version is
         taken as its `MCP-Protocol-Version` header says, and as 2025-03-26 when it has none. The methods are
-        `initialize`, `ping`, `tools/list`, `tools/call` and `server/discover`. Its tools are wm-mcp's, and each is made of
+        `initialize`, `ping`, `tools/list`, `tools/call` and `server/discover`. A call carries an API key, or the access
+        token of an agent signed in through the browser (`POST /oauth/token`), which stands as a key here: it holds what
+        its person allowed, in the account they chose. Its tools are wm-mcp's, and each is made of
         this API's own calls with this call's key: a tool does only what the key may, each of its calls counts against
         the key's calls a minute as this one does and is audited as it is when made alone, and the account's audit has a
         line of the tool's own (`mcp.tool`), with how it ended. A tool that fails answers a result marked `isError`, its
@@ -5446,6 +6285,7 @@ paths:
         the same, and `run_command` gives its `exit_code` with its output left out.
       security:
         - key: []
+        - agentSignIn: []
       parameters:
         - name: MCP-Protocol-Version
           in: header
@@ -5469,17 +6309,17 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/McpAnswer" }
         "401":
-          description: No key, or a key that does not work; `WWW-Authenticate` says `Bearer`
+          description: "No key and no token, or one that does not work; `WWW-Authenticate` names `resource_metadata`, the address of the server's sign-in document, and `scope`, what an agent may ask for, and an agent's app signs its person in from them"
           headers:
             WWW-Authenticate:
-              description: "`Bearer`: the server takes an API key."
+              description: "`Bearer`, with `resource_metadata` and `scope`; and `error=\"invalid_token\"` when a key or a token was given."
               schema: { type: string }
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: A key made for other work, which holds no machine scope; or the dashboard's sign-in, which the server does not take
+          description: "A key made for other work, which holds no machine scope; or the dashboard's sign-in, which the server does not take; or an agent's sign-in without a scope its person could allow, where `WWW-Authenticate` says `insufficient_scope` and the `scope` to ask for"
         "408":
           $ref: "#/components/responses/Timeout"
           description: The message came too slowly
@@ -5503,6 +6343,10 @@ components:
       description: |
         The person's sign-in to the dashboard, on https://app.wheelmachine.ai only. It lasts 30 days from its last
         call. A call acts in the person's own account, or in an organisation they are in, named with `X-Account`.
+    agentSignIn:
+      type: http
+      scheme: bearer
+      description: "An agent's access token, from signing in through the browser: `wmat_` and 43 characters. It works on `/mcp` alone."
     csrf:
       type: apiKey
       in: header
@@ -5523,6 +6367,11 @@ components:
       in: path
       required: true
       schema: { type: string, pattern: "^m_[0-9a-z]{26}$" }
+    DeploymentId:
+      name: deployment_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^dep_[0-9a-z]{26}$" }
     ProjectId:
       name: project_id
       in: path
@@ -5810,18 +6659,18 @@ components:
       properties:
         step:
           type: string
-          enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key]
+          enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key, agent_app]
         org: { type: string, description: "The organisation deleted, transferred, or made an owner of (`delete_org`, `hand_over`, `make_owner`)." }
-        to: { type: string, description: "Who it is for: for `hand_over`, the person's id or @handle; for `make_owner`, a person's id, or what the invitation names - an @handle, an e-mail address, or `github:` and a login." }
-        account: { type: string, description: "The account a key with full access, or one that makes keys or gives secrets, is made in (`full_access_key`, `key_making_key`, `secrets_key`): the one the call acts in when left out." }
+        to: { type: string, description: "Who it is for: for `hand_over`, the person's id or @handle; for `make_owner`, a person's id, or what the invitation names - an @handle, an e-mail address, or `github:` and a login; for `agent_app`, the app's `returns_to`." }
+        account: { type: string, description: "The account a key with full access, or one that makes keys or gives secrets, is made in (`full_access_key`, `key_making_key`, `secrets_key`), or an app is allowed in (`agent_app`): the one the call acts in when left out." }
     ConfirmCodeSent:
       type: object
       required: [object, step, expires_at, sent_to]
       properties:
         object: { const: confirm_code }
-        step: { type: string, enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key] }
+        step: { type: string, enum: [close_account, delete_org, hand_over, make_owner, full_access_key, key_making_key, secrets_key, agent_app] }
         org: { type: string }
-        to: { type: string, description: "As the ask said it: a person in the organisation by their id, or an @handle, e-mail address or `github:` login." }
+        to: { type: string, description: "As the ask said it: a person in the organisation by their id, or an @handle, e-mail address or `github:` login; or an app's `returns_to`." }
         account: { type: string }
         expires_at: { type: string, format: date-time, description: "When the code stops working: 10 minutes on." }
         sent_to: { type: string, description: "The address it went to, in part: `a…@example.com`." }
@@ -6818,6 +7667,247 @@ components:
           description: |
             Archived once nobody has used it this long, paused or stopped; null for no time of its own. It
             may be archived sooner.
+        deployment:
+          type: [string, "null"]
+          description: The deployment it runs, by id; null for none. A machine that runs one cannot be handed off or forked for another person, and deleting it deletes its deployment.
+    Deployment:
+      type: object
+      required: [object, id, name, project, held_by, kind, source, branch, commit, build, start, health_path, port, cpus, type, region, keep_awake, secrets, machine, url, state, last_status, run, created_at, updated_at, live_at]
+      properties:
+        object: { const: deployment }
+        id: { type: string, examples: [dep_01jb2xk3n4p5q6r7s8t9v0w1x2] }
+        name: { type: string, description: "Its machine is called the same." }
+        project: { type: string, description: The team it is deployed in. }
+        held_by:
+          description: In an organisation, whose it is - the person who deployed it; null in your own account.
+          oneOf:
+            - $ref: "#/components/schemas/HeldBy"
+            - type: "null"
+        kind: { type: string, enum: [production] }
+        source: { $ref: "#/components/schemas/DeploySource" }
+        branch:
+          type: [string, "null"]
+          description: The branch it is built from - its repository's default until a run says which that was; null for files.
+        commit:
+          type: [string, "null"]
+          description: The commit live now; null before one is, and for files.
+        build:
+          type: [string, "null"]
+          description: What builds it, run in its code's folder before it starts; empty for nothing. Null unless you use its machine, with a key that holds `cloud:machines:exec`.
+        start:
+          type: [string, "null"]
+          description: What starts it, run in its code's folder, with its port in `$PORT` and `HOST` as 0.0.0.0. Null unless you use its machine, with a key that holds `cloud:machines:exec`.
+        port: { type: integer, description: "The port it listens on, on 0.0.0.0. Its address is that port's." }
+        cpus:
+          type: [integer, "null"]
+          description: Its machine's size; null for one made from a machine type, which says it.
+        type:
+          type: [string, "null"]
+          description: The team's machine type its machine was made from; null for none.
+        region: { type: [string, "null"] }
+        health_path:
+          type: [string, "null"]
+          description: What a check of the app asks for, when its person set it; null for its page, and to whoever does not use its machine.
+        keep_awake:
+          type: boolean
+          description: Its machine never pauses by itself, so it runs, and is charged, all the time. When false, it pauses once nobody visits and its app is quiet, and the next visit wakes it.
+        secrets:
+          type: array
+          items: { type: string }
+          description: The secrets its machine's commands and its app get, by name - never a value.
+        machine: { type: [string, "null"], description: "Its machine, by id." }
+        url:
+          type: [string, "null"]
+          description: Its public address, once it has been live; null before.
+        state:
+          type: string
+          enum: [building, waiting_for_files, live, not_answering, failed]
+          description: |
+            `building` until its first version is live; `waiting_for_files` until its files come; `live` once a version
+            answers; `not_answering` when its app was started, did not answer, and no earlier version could take its place,
+            or when its app has gone and could not be started again;
+            `failed` when its first run ended before its app started. `run.failure` says why.
+        last_status:
+          type: [integer, "null"]
+          description: The status its app answered its last check with, when it was not 2xx or 3xx; null otherwise.
+        run:
+          description: Its current run, else its last; null for none.
+          oneOf:
+            - $ref: "#/components/schemas/DeployRun"
+            - type: "null"
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        live_at: { type: [string, "null"], format: date-time }
+    DeploySource:
+      type: object
+      required: [kind, provider, connection, host, repo, url]
+      properties:
+        kind: { type: string, enum: [repo, url, upload] }
+        provider: { type: [string, "null"], description: "github or gitlab, for a repository of a connection." }
+        connection: { type: [string, "null"] }
+        host: { type: [string, "null"] }
+        repo: { type: [string, "null"], description: "A repository's path on its host, such as `acme/shop`." }
+        url: { type: [string, "null"], description: "A public repository's https address." }
+    DeployRun:
+      type: object
+      required: [object, id, why, state, step, progress, note, failure, commit, branch, files, created_at, started_at, ended_at]
+      properties:
+        object: { const: deploy_run }
+        id: { type: string, examples: [dpr_01jb2xk3n4p5q6r7s8t9v0w1x2] }
+        why:
+          type: string
+          enum: [first, redeploy, files, restart]
+          description: "`restart`: its app had gone, and could not be started again for a visitor. `failure` says why."
+        state: { type: string, enum: [queued, working, live, failed, cancelled] }
+        step:
+          type: string
+          enum: [machine, files, fetch, unpack, build, start, check, open, back]
+          description: Where it is, or where it ended. `back` puts the version before back, once a new one did not answer.
+        progress: { type: integer, minimum: 0, maximum: 100, description: "How far it is: an estimate." }
+        note:
+          type: [string, "null"]
+          description: What it waits for now, such as "No machine is free right now, trying again"; null for nothing.
+        failure:
+          type: [string, "null"]
+          description: Why it failed; null otherwise. What it quotes of its logs is shown only to whoever uses its machine, with a key that holds `cloud:machines:exec`.
+        commit: { type: [string, "null"] }
+        branch: { type: [string, "null"] }
+        files: { type: [integer, "null"], description: "How many files it was sent, once they have all come." }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        ended_at: { type: [string, "null"], format: date-time }
+    DeploymentCreate:
+      type: object
+      required: [source, start, port]
+      properties:
+        name: { type: string, maxLength: 80, description: "Its name and its machine's; its repository's or address's last part when left out." }
+        project: { type: string, description: "The team; your first when left out." }
+        source: { $ref: "#/components/schemas/DeploySourceCreate" }
+        branch: { type: string, maxLength: 255, description: "Its repository's default when left out." }
+        build: { type: string, maxLength: 4096 }
+        start: { type: string, maxLength: 4096 }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        cpus: { type: integer, enum: [2, 4, 8], default: 2 }
+        type: { type: string, description: "A machine type of the team's, by id or name, in place of `cpus`." }
+        region: { type: string }
+        secrets:
+          type: array
+          items: { type: string }
+          description: The account's secrets its machine gets, by name.
+        keep_awake: { type: boolean, default: false }
+        health_path:
+          type: string
+          maxLength: 255
+          description: What a check of the app asks for, a path of its own such as `/healthz`. Any answer within five seconds counts. Its page when left out.
+    DeploySourceCreate:
+      type: object
+      properties:
+        connection: { type: string, description: "With `repo`: one of the account's code connections." }
+        repo: { type: string, description: "With `connection`: the repository's path, such as `acme/shop`." }
+        url: { type: string, description: "A public repository's https address; no ssh or file address, and no name or password in it." }
+        upload: { type: boolean, description: "Its files are sent next (`PUT /v1/deployments/{deployment_id}/files`)." }
+    DeploymentChange:
+      type: object
+      properties:
+        name: { type: string, maxLength: 80 }
+        branch: { type: string, maxLength: 255 }
+        build: { type: string, maxLength: 4096 }
+        start: { type: string, maxLength: 4096 }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        keep_awake: { type: boolean }
+        health_path:
+          type: string
+          maxLength: 255
+          description: What a check of the app asks for; empty for its page.
+    DeploymentList:
+      type: object
+      required: [object, data, next]
+      properties:
+        object: { const: list }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/Deployment" }
+        next: { type: "null" }
+    DeployRunList:
+      type: object
+      required: [object, data, next]
+      properties:
+        object: { const: list }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/DeployRun" }
+        next: { type: "null" }
+    DeployDetect:
+      type: object
+      properties:
+        source: { $ref: "#/components/schemas/DeploySourceCreate" }
+        branch: { type: string }
+        files:
+          type: object
+          additionalProperties: { type: [string, "null"] }
+          description: |
+            Files about to be sent, by name, with their contents - or null for one that is there, unread: package.json,
+            package-lock.json, pnpm-lock.yaml, yarn.lock, requirements.txt, pyproject.toml, uv.lock, Pipfile, manage.py,
+            main.py, app.py, Procfile, go.mod, Cargo.toml, index.html, Dockerfile.
+    DeployGuess:
+      type: object
+      required: [object, runtime, build, start, port, note]
+      properties:
+        object: { const: deploy_guess }
+        runtime: { type: string, enum: [node, python, go, rust, static, docker, unknown] }
+        build: { type: string }
+        start: { type: string }
+        port: { type: integer }
+        note: { type: [string, "null"], description: "What to know of it, such as that a Dockerfile is not run." }
+    DeployRepo:
+      type: object
+      required: [object, connection, provider, host, repo, shared, updated_at]
+      properties:
+        object: { const: deploy_repo }
+        connection: { type: string }
+        provider: { type: string, enum: [github, gitlab] }
+        host: { type: string }
+        repo: { type: string }
+        shared:
+          type: boolean
+          description: Given to the team already; false, deploying it gives it the team to read first.
+        updated_at: { type: [string, "null"], format: date-time, description: "When it was last pushed to, as its host says." }
+    DeployRepoList:
+      type: object
+      required: [object, data, next]
+      properties:
+        object: { const: list }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/DeployRepo" }
+        next: { type: "null" }
+    DeployBranch:
+      type: object
+      required: [object, name, commit]
+      properties:
+        object: { const: deploy_branch }
+        name: { type: string }
+        commit: { type: string }
+    DeployBranchList:
+      type: object
+      required: [object, data, default, known, next]
+      properties:
+        object: { const: list }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/DeployBranch" }
+        default: { type: [string, "null"], description: "Its default branch." }
+        known: { type: boolean, description: "False for a public repository on a host none are read of." }
+        next: { type: "null" }
+    DeployLog:
+      type: object
+      required: [object, kind, run, text, done]
+      properties:
+        object: { const: deploy_log }
+        kind: { type: string, enum: [build, app] }
+        run: { type: [string, "null"] }
+        text: { type: string }
+        done: { type: boolean, description: "With `build`, the run has ended; with `app`, the app is not running." }
     PauseReason:
       type: object
       required: [why, limit]
@@ -6880,10 +7970,12 @@ components:
             it runs, and is charged, until it is paused or stopped.
         idle_after_s:
           type: integer
-          minimum: 60
+          minimum: 1800
           maximum: 86400
-          default: 300
-          description: How long it must be idle before it pauses by itself. Only with `sleep_when_idle` true.
+          default: 1800
+          description: |
+            How long it must be idle before it pauses by itself: 1800 (30 minutes, the least - no machine pauses sooner, and
+            less is refused) to 86400 (a day). Only with `sleep_when_idle` true.
         put_away_after_s:
           type: integer
           minimum: 0
@@ -6935,8 +8027,9 @@ components:
           type: string
           enum: [open, closed, allowed]
           description: |
-            `open`: it reaches the whole internet. `closed`: none of it, though name lookups (DNS), some sites we host
-            and its team's folders still work. `allowed`: only what `allow` lists.
+            `open`: it reaches the whole internet. `closed`: none of it, in or out, and no name lookups: a port opened
+            `public` answers only as a private one does until it is opened again. `allowed`: only what `allow` lists.
+            Whatever it is, its team's repositories and folders still work where given.
         allow:
           type: array
           description: Where an `allowed` machine may reach; empty for `open` and `closed`.
@@ -7220,6 +8313,48 @@ components:
         repo: { type: string }
         host: { type: string }
         connection: { type: string }
+    MachineRepository:
+      type: object
+      required: [object, provider, host, repository, access, linked, can_push, push]
+      properties:
+        object: { type: string, enum: [machine_repository] }
+        provider: { type: string, enum: [github, gitlab] }
+        host: { type: string, description: "github.com, gitlab.com, or a company's own GitLab" }
+        repository: { type: string, description: "Its path on its host, such as acme/api" }
+        access: { type: string, enum: [read, write] }
+        linked: { type: boolean, description: "The person who holds the machine has their own account linked there, and it still works. On a company's own GitLab, connected by a group's token, nobody's is, and none is needed" }
+        can_push: { type: boolean, description: "A push will go: its access is write, and its holder's account is linked or none is needed" }
+        push:
+          description: "The team's own rule for pushes to it; null for any branch the account does not protect, and its tags"
+          oneOf: [{ $ref: "#/components/schemas/CodePush" }, { type: "null" }]
+    PullRequestCreate:
+      type: object
+      additionalProperties: false
+      required: [repository, head, base, title]
+      properties:
+        repository: { type: string, maxLength: 512, description: "Its path on its host, such as acme/api" }
+        host: { type: string, description: "Its host, only where the same path is on two of them" }
+        head: { type: string, maxLength: 200, description: "The branch with the changes, as it is named: not a fork's" }
+        base: { type: string, maxLength: 200, description: "The branch to merge them into; it may be a protected one" }
+        title: { type: string, minLength: 1, maxLength: 255, description: "One line, at most 255 characters" }
+        body: { type: string, description: "At most 60000 bytes" }
+        draft: { type: boolean, default: false, description: "Open it as a draft" }
+    PullRequest:
+      type: object
+      required: [object, opened, provider, host, repository, head, base, draft, number, url, run, note]
+      properties:
+        object: { type: string, enum: [pull_request] }
+        opened: { type: boolean, description: "True on GitHub, where it is open now. False on GitLab, until the push in `run` is run" }
+        provider: { type: string, enum: [github, gitlab] }
+        host: { type: string }
+        repository: { type: string }
+        head: { type: string }
+        base: { type: string }
+        draft: { type: boolean }
+        number: { type: [integer, "null"], description: "Its number, once open" }
+        url: { type: [string, "null"], description: "Its address, once open" }
+        run: { type: [string, "null"], description: "On GitLab: the line of git to run in the clone in the machine, which opens a merge request as it pushes and prints its address" }
+        note: { type: [string, "null"], description: "On GitLab: what to do with `run`" }
     SharedFolder:
       type: object
       required: [object, id, kind, name, person, left_at, goes_at, access, teams, bytes, changed_at, made_at]
@@ -7331,7 +8466,7 @@ components:
           description: "The largest machine it holds, in CPUs: a bigger one is not made, forked, moved or handed into it, nor started in it. Null for no rule."
         idle_max_seconds:
           type: [integer, "null"]
-          description: "The longest its machines stay up idle before they sleep, in seconds: a machine may not ask for longer, or never to sleep. Null for no rule."
+          description: "The longest its machines stay up idle before they sleep, in seconds, 1800 (30 minutes, the least any machine waits) to 86400: a machine may not ask for longer, or never to sleep. Null for no rule."
         public_ports:
           type: string
           enum: ["on", links_only, "off"]
@@ -7362,7 +8497,7 @@ components:
         month_budget: { type: [number, "null"], minimum: 0, maximum: 1000000000, description: "In the organisation's currency; null for no budget." }
         month_budget_usd: { type: [number, "null"], minimum: 0, deprecated: true, description: "Deprecated: `month_budget` in dollars, taken in an organisation counted in dollars alone; set `month_budget`." }
         max_machine_vcpus: { type: [integer, "null"], minimum: 1, maximum: 1024, description: "Left out: as it is." }
-        idle_max_seconds: { type: [integer, "null"], minimum: 60, maximum: 86400, description: "Left out: as it is." }
+        idle_max_seconds: { type: [integer, "null"], minimum: 1800, maximum: 86400, description: "Left out: as it is. Under 1800 is refused: no machine sleeps sooner than 30 minutes idle." }
         public_ports: { type: string, enum: ["on", links_only, "off"], description: "Left out: as it is." }
         types_only: { type: boolean, description: "Left out: as it is. Owners and admins alone change it." }
     TeamRulesChange:
@@ -7377,7 +8512,7 @@ components:
         month_budget: { type: [number, "null"], minimum: 0, maximum: 1000000000, description: "In the organisation's currency; null for no budget." }
         month_budget_usd: { type: [number, "null"], minimum: 0, deprecated: true, description: "Deprecated: `month_budget` in dollars, taken in an organisation counted in dollars alone; set `month_budget`." }
         max_machine_vcpus: { type: [integer, "null"], minimum: 1, maximum: 1024 }
-        idle_max_seconds: { type: [integer, "null"], minimum: 60, maximum: 86400 }
+        idle_max_seconds: { type: [integer, "null"], minimum: 1800, maximum: 86400 }
         public_ports: { type: string, enum: ["on", links_only, "off"] }
         types_only: { type: boolean, description: "Owners and admins alone change it." }
     MachineType:
@@ -7424,7 +8559,7 @@ components:
           items: { type: string }
         network: { $ref: "#/components/schemas/NetworkSet" }
         sleep_when_idle: { type: boolean, default: true }
-        idle_after_s: { type: integer, minimum: 60, maximum: 86400, default: 300 }
+        idle_after_s: { type: integer, minimum: 1800, maximum: 86400, default: 1800, description: "30 minutes, the least, to a day." }
         put_away_after_s: { type: integer, minimum: 0, maximum: 2592000, default: 0, description: "From 3600 to 2592000, or 0 for none." }
         repos:
           type: [array, "null"]
@@ -7458,10 +8593,23 @@ components:
     MachineBatchCreate:
       type: object
       additionalProperties: false
-      required: [type]
       properties:
         project: { type: string, description: "The team; the account's first when left out." }
-        type: { type: string, description: "One of the team's machine types, by id or name." }
+        type:
+          type: string
+          description: |
+            One of the team's machine types, by id or name: the machines are made as it says, so `cpus`, `gpu`, `network`,
+            `sleep_when_idle`, `idle_after_s` and `put_away_after_s` are refused beside it. Left out, they are made as
+            those say, the way one machine is - for a team with no types to pick from.
+        cpus: { type: integer, enum: [2, 4, 8], default: 2, description: "Without a type. Not with `gpu`." }
+        gpu: { type: string, description: "Without a type. A GPU `id` from `GET /v1/gpus`." }
+        network:
+          allOf:
+            - $ref: "#/components/schemas/NetworkSet"
+          description: "Without a type. Left out, the machines are open."
+        sleep_when_idle: { type: boolean, default: true, description: "Without a type: as a new machine's." }
+        idle_after_s: { type: integer, minimum: 1800, maximum: 86400, default: 1800, description: "Without a type: as a new machine's, 30 minutes at the least." }
+        put_away_after_s: { type: integer, minimum: 0, maximum: 2592000, default: 0, description: "Without a type: as a new machine's." }
         people:
           type: array
           maxItems: 100
@@ -7474,7 +8622,7 @@ components:
           type: string
           maxLength: 80
           default: "<type>-<handle>"
-          description: "The pattern of their names: `<type>`, `<handle>` and `<n>`, each one's number among its person's. With `each` over 1 and no `<n>`, `-<n>` goes at the end."
+          description: "The pattern of their names: `<type>` (`machine`, with no type), `<handle>` and `<n>`, each one's number among its person's. With `each` over 1 and no `<n>`, `-<n>` goes at the end."
         region: { type: string, description: "A region `id` from `GET /v1/regions` to run near." }
         labels:
           type: object
@@ -7487,7 +8635,7 @@ components:
       properties:
         object: { const: machine_batch }
         project: { type: string }
-        type: { type: string }
+        type: { type: [string, "null"], description: "The type they were made from; null for none." }
         data:
           type: array
           description: Each machine, in the order asked - each person's in turn.
@@ -7694,8 +8842,8 @@ components:
         public:
           type: boolean
           description: |
-            True: anyone may reach the address. False: only a call with an API key that can see the machine, and a
-            browser that opened a link made for it.
+            True: anyone may reach the address - but while the machine's internet is `closed`, only as when false.
+            False: only a call with an API key that can see the machine, and a browser that opened a link made for it.
         url:
           type: string
           format: uri
@@ -8647,6 +9795,84 @@ components:
         state: { const: pending }
         interval: { type: integer }
         expires_at: { type: string, format: date-time }
+    AgentSignInDecision:
+      type: object
+      additionalProperties: false
+      required: [request]
+      properties:
+        request: { type: string, description: "The handle after the # of the page's address, of use only in the browser it was opened in." }
+        account:
+          type: string
+          description: The account it would act in - your own, or an organisation you are in; the account the call acts in when left out.
+        trusted_address: { type: string, description: "Allowing an app we do not know: its `returns_to`, said back." }
+    AgentSignInAsk:
+      type: object
+      required: [id, object, name, name_is_claim, logo, kind, returns_to, return_address, scopes, projects, account, address, device, created_at, expires_at]
+      properties:
+        id: { type: string }
+        object: { type: string, const: agent_sign_in_ask }
+        name: { type: string }
+        name_is_claim: { type: boolean, description: Whether `name` is only what the app says of itself. }
+        logo: { type: [string, "null"], description: "Our own picture of an app we know; null for any other." }
+        kind:
+          type: string
+          enum: [known, this_computer, unknown]
+          description: Told by where it returns to, never by what it says of itself.
+        returns_to: { type: string, description: The name of the address it returns to. }
+        return_address: { type: string }
+        scopes: { type: array, items: { $ref: "#/components/schemas/Scope" } }
+        projects: { type: array, items: { type: string } }
+        account:
+          type: [object, "null"]
+          properties:
+            id: { type: string }
+            name: { type: string }
+        address: { type: string }
+        device: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    AgentSignInAnswer:
+      type: object
+      required: [object, state, redirect_to]
+      properties:
+        object: { type: string, const: agent_sign_in_decision }
+        state: { type: string, enum: [approved, denied] }
+        redirect_to: { type: [string, "null"], description: "Where to send the browser now; null when nothing goes back." }
+    ConnectedAgent:
+      type: object
+      required: [id, object, name, name_is_claim, logo, kind, returns_to, return_address, scopes, projects, made_by, address, device, connected_at, last_used_at, expires_at]
+      properties:
+        id: { type: string }
+        object: { type: string, const: connected_agent }
+        name: { type: string }
+        name_is_claim: { type: boolean }
+        logo: { type: [string, "null"] }
+        kind: { type: string, enum: [known, this_computer, unknown] }
+        returns_to: { type: string }
+        return_address: { type: string }
+        scopes: { type: array, items: { $ref: "#/components/schemas/Scope" } }
+        projects: { type: array, items: { type: string } }
+        made_by: { type: [string, "null"], description: "In an organisation, the person whose it is." }
+        address: { type: string }
+        device: { type: string }
+        connected_at: { type: string, format: date-time }
+        last_used_at: { type: [string, "null"], format: date-time }
+        expires_at: { type: string, format: date-time, description: It ends by itself if it is not used by then. }
+    AgentResourceDocument:
+      type: object
+      required: [resource, authorization_servers, scopes_supported]
+      properties:
+        resource: { type: string }
+        authorization_servers: { type: array, items: { type: string } }
+        scopes_supported: { type: array, items: { type: string } }
+        bearer_methods_supported: { type: array, items: { type: string } }
+        resource_name: { type: string }
+    AgentTokenError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        error_description: { type: string }
     DeviceLoginDecision:
       type: object
       additionalProperties: false

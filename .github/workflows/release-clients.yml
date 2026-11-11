@@ -104,7 +104,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: startsWith(github.ref_name, 'wm-v')
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: startsWith(github.ref_name, 'py-v')
@@ -193,7 +193,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache: false                # standard library only: nothing to fetch, and nothing cached into a release
       - name: vet and test, then every archive and SHA256SUMS (release.py, which stops on a version not the tag's)
         working-directory: frontend/cli

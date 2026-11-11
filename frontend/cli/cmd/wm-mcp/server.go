@@ -59,7 +59,7 @@ const instructions = "Wheelmachine machines on this account: make them, run comm
 	"machine runs: pause or stop machines that are not in use. A machine's commands get the account's secrets it was given " +
 	"as environment variables, so a command there can read them; these tools name secrets, and never take a value. Errors " +
 	"come back as results with " +
-	"isError and the API's code."
+	"isError and the API's code. search_docs looks in the docs: use it rather than guess a flag, a route or a limit."
 
 // What a client is told: Deploy's words with its tools, once they are offered.
 func serverInstructions() string {

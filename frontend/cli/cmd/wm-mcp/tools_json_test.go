@@ -12,8 +12,9 @@ import (
 
 // The file tools.json holds what this server tells a client in its own words: initialize's instructions, and the
 // tools as tools/list gives them - each one's name, title, description, input schema and annotations. Wheelmachine's
-// hosted MCP server serves a copy of it, so that the two offer the same tools in the same words; a tool changed here
-// without the file fails this test.
+// hosted MCP server serves a copy of it, so that the two offer the same tools in the same words, and says of Deploy what
+// it holds for that server alone (hostedDeployInstructions: it sends no folder); a tool changed here without the file
+// fails this test.
 const toolsFile = "tools.json"
 
 // Set to write tools.json anew from the tools as they are now: WM_MCP_TOOLS_WRITE=1 go test ./cmd/wm-mcp
@@ -27,10 +28,11 @@ func toolsJSON(t *testing.T) []byte {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(struct {
-		Instructions       string `json:"instructions"`
-		DeployInstructions string `json:"deploy_instructions"`
-		Tools              []tool `json:"tools"`
-	}{instructions, deployInstructions, tools()}); err != nil {
+		Instructions             string `json:"instructions"`
+		DeployInstructions       string `json:"deploy_instructions"`
+		HostedDeployInstructions string `json:"hosted_deploy_instructions"`
+		Tools                    []tool `json:"tools"`
+	}{instructions, deployInstructions, hostedDeployInstructions, tools()}); err != nil {
 		t.Fatal(err)
 	}
 	return b.Bytes()
@@ -53,14 +55,20 @@ func TestToolsJSONIsWhatTheServerOffers(t *testing.T) {
 	}
 	// and it is what initialize and tools/list answer
 	var file struct {
-		Instructions string `json:"instructions"`
-		Tools        []any  `json:"tools"`
+		Instructions       string `json:"instructions"`
+		DeployInstructions string `json:"deploy_instructions"`
+		Tools              []any  `json:"tools"`
 	}
 	if err := json.Unmarshal(got, &file); err != nil {
 		t.Fatal(err)
 	}
+	told := file.Instructions
+	if deployListed {
+		// (Deploy's follow once its tools are listed, as the hosted server says them while Deploy is on)
+		told += " " + file.DeployInstructions
+	}
 	s := start(t, connectTo(fakeapi.New(t)))
-	if said := s.initialize("2025-11-25")["instructions"]; said != file.Instructions {
+	if said := s.initialize("2025-11-25")["instructions"]; said != told {
 		t.Fatalf("initialize says %q", said)
 	}
 	// (those of Deploy's it holds are for the hosted server until Deploy opens: deploy_test.go)

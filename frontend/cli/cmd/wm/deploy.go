@@ -23,17 +23,10 @@ func wmHelp() string {
 		return mainHelp
 	}
 	return strings.Replace(mainHelp, "\nAccount:\n", "\nDeploy:\n"+
-		"  deploy      put an app on the internet from a folder, a repository or an address: wm deploy [<source>]\n"+
-		"  deployments its address, logs, settings and what it did; redeploy and delete it (wm deployments -h)\n"+
+		"  deploy     put an app on the internet from a folder, a repository or an address: wm deploy [<source>]\n"+
+		"  deployments\n"+
+		"             its address, logs, settings and what it did; redeploy and delete it (wm deployments -h)\n"+
 		"\nAccount:\n", 1)
-}
-
-// deployWords is what a command of Deploy's says of itself, with what stands until Deploy opens.
-func deployWords(about string) string {
-	if api.DeployOpen {
-		return about
-	}
-	return "Not open yet: until Deploy opens, this answers not_open.\n\n" + about
 }
 
 const deploymentsHelp = `Usage: wm deployments <command> [arguments] [flags]
@@ -266,10 +259,11 @@ func deployedAlready(d *api.Deployment, folder string) error {
 }
 
 func (a *app) deployCmd(ctx context.Context, args []string) error {
-	fs := a.flags("deploy", "wm deploy [<folder, repository or address>] [flags]", deployWords("Put an app on the internet, on a machine of its "+
+	fs := a.flags("deploy", "wm deploy [<folder, repository or address>] [flags]", "Put an app on the internet, on a machine of its "+
 		"own, at a public address. It comes from a folder here (this one when left out), a repository of your connections (acme/shop), or a public "+
-		"repository's https address. wm reads how it builds and starts from its files, unless you say, and waits for it to go live. It is charged "+
-		"as any machine. "+deployLeftOutWords+" Give its secrets with --secret."))
+		"repository's https address. wm reads how it builds and starts from its files, unless you say, and waits until it is live, or says why "+
+		"it is not. It is charged "+
+		"as any machine. "+deployLeftOutWords+" Give its secrets with --secret.")
 	name := fs.String("name", "", "its name and its machine's; its folder's, repository's or address's last part when left out")
 	project := fs.String("project", "", "its team; your first when left out")
 	connection := fs.String("connection", "", "the code connection its repository is in (code_...), when several have one of that name")
@@ -282,7 +276,7 @@ func (a *app) deployCmd(ctx context.Context, args []string) error {
 	region := fs.String("region", "", "a region to run near (wm regions)")
 	var secrets listFlag
 	fs.Var(&secrets, "secret", "a secret of the account it gets, by its `NAME`; repeat for more (wm secrets)")
-	keepAwake := fs.Bool("always-on", false, "never sleep: it runs, and is charged, all the time, until it is deleted")
+	keepAwake := fs.Bool("always-on", false, "never sleep: it runs, and is charged, all the time")
 	options, optionsSaid := folderFlags(fs)
 	dryRun := fs.Bool("dry-run", false, "a folder: say what would go, and send nothing")
 	yes := fs.Bool("yes", false, "send a folder without being asked")
@@ -561,7 +555,7 @@ func (a *app) printDeployment(d *api.Deployment) error {
 }
 
 func (a *app) deploymentsList(ctx context.Context, args []string) error {
-	fs := a.flags("deployments ls", "wm deployments ls [flags]", deployWords("List the deployments you see, newest first."))
+	fs := a.flags("deployments ls", "wm deployments ls [flags]", "List the deployments you see, newest first.")
 	project := fs.String("project", "", "only this team's deployments")
 	words, err := parse(fs, args)
 	if err != nil {
@@ -615,8 +609,8 @@ func (a *app) deployment(ctx context.Context, word string) (*api.Client, string,
 }
 
 func (a *app) deploymentsGet(ctx context.Context, args []string) error {
-	fs := a.flags("deployments get", "wm deployments get <deployment>", deployWords("Show a deployment: its state, its address and its "+
-		"current or last run."))
+	fs := a.flags("deployments get", "wm deployments get <deployment>", "Show a deployment: its state, its address and its "+
+		"current or last run.")
 	words, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -636,7 +630,7 @@ func (a *app) deploymentsGet(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsRuns(ctx context.Context, args []string) error {
-	fs := a.flags("deployments runs", "wm deployments runs <deployment>", deployWords("List a deployment's last runs, newest first."))
+	fs := a.flags("deployments runs", "wm deployments runs <deployment>", "List a deployment's last runs, newest first.")
 	words, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -673,9 +667,9 @@ func (a *app) deploymentsRuns(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsLogs(ctx context.Context, args []string) error {
-	fs := a.flags("deployments logs", "wm deployments logs <deployment> [--kind build|app] [--run <run>]", deployWords("Print a deployment's "+
+	fs := a.flags("deployments logs", "wm deployments logs <deployment> [--kind build|app] [--run <run>]", "Print a deployment's "+
 		"log: a run's own, fetching its code and building it, or the end of what the app itself writes (--kind app), which wakes its machine. "+
-		"Only the person who deployed it can."))
+		"Only the person who deployed it can.")
 	kind := fs.String("kind", "build", "`build`, a run's own log, or app, what the app writes")
 	run := fs.String("run", "", "with build, a run's own (dpr_...); its last run's when left out")
 	words, err := parse(fs, args)
@@ -709,9 +703,9 @@ func (a *app) deploymentsLogs(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsRedeploy(ctx context.Context, args []string) error {
-	fs := a.flags("deployments redeploy", "wm deployments redeploy <deployment> [--files <folder>] [flags]", deployWords("Fetch a deployment's "+
+	fs := a.flags("deployments redeploy", "wm deployments redeploy <deployment> [--files <folder>] [flags]", "Fetch a deployment's "+
 		"branch as it is now, or use its files again, or send new ones (--files), and build it. A build that fails leaves the live version "+
-		"running. Once built, the live version stops and the new one starts, and one that does not answer is replaced by the last one."))
+		"running. Once built, the live version stops and the new one starts, and one that does not answer is replaced by the last one.")
 	files := fs.String("files", "", "a `folder` to send in place of its last files")
 	options, optionsSaid := folderFlags(fs)
 	yes := fs.Bool("yes", false, "send the folder without being asked")
@@ -771,10 +765,10 @@ func (a *app) deploymentsRedeploy(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsSet(ctx context.Context, args []string) error {
-	fs := a.flags("deployments set", "wm deployments set <deployment> [flags]", deployWords("Change a deployment's settings. Its name, branch, "+
-		"commands and port apply from its next run: the live version stays as it is until it is redeployed. --always-on applies at once. "+
-		"Only the person who deployed it can."))
-	name := fs.String("name", "", "its name")
+	fs := a.flags("deployments set", "wm deployments set <deployment> [flags]", "Change a deployment's settings. Its name and its "+
+		"machine's change at once, as does --always-on. Its branch, commands and port apply from its next run: the live version stays as it is "+
+		"until it is redeployed. Only the person who deployed it can.")
+	name := fs.String("name", "", "its name and its machine's")
 	branch := fs.String("branch", "", "the branch to build")
 	build := fs.String("build", "", "what builds it")
 	start := fs.String("start", "", "what starts it")
@@ -822,8 +816,8 @@ func (a *app) deploymentsSet(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsRemove(ctx context.Context, args []string) error {
-	fs := a.flags("deployments rm", "wm deployments rm [--yes] <deployment>...", deployWords("Delete deployments, and their machines with all "+
-		"their files. Their addresses answer nothing from then on. This cannot be undone."))
+	fs := a.flags("deployments rm", "wm deployments rm [--yes] <deployment>...", "Delete deployments, and their machines with all "+
+		"their files. Their addresses answer nothing from then on. This cannot be undone.")
 	yes := fs.Bool("yes", false, "delete without being asked")
 	fs.BoolVar(yes, "y", false, "delete without being asked")
 	words, err := parse(fs, args)
@@ -864,8 +858,8 @@ func (a *app) deploymentsRemove(ctx context.Context, args []string) error {
 }
 
 func (a *app) deploymentsRepos(ctx context.Context, args []string) error {
-	fs := a.flags("deployments repos", "wm deployments repos [flags]", deployWords("List the repositories you may deploy into a team, the most "+
-		"recently pushed to first. SHARED says the team has it already; if not, deploying it gives it to the team to read first."))
+	fs := a.flags("deployments repos", "wm deployments repos [flags]", "List the repositories you may deploy into a team, the most "+
+		"recently pushed to first. SHARED says the team has it already; if not, deploying it gives it to the team to read first.")
 	project := fs.String("project", "", "the team; your first when left out")
 	connection := fs.String("connection", "", "one connection's alone (code_...)")
 	words, err := parse(fs, args)

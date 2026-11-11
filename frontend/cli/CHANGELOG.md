@@ -2,6 +2,29 @@
 
 `wm`, the Wheelmachine command line, and `wm-mcp`, its MCP server for agents. Each release is tagged `wm-v<version>`.
 
+## 0.1.5
+
+- Deploy is open: `wm deploy` puts an app on the internet from the folder you are in, a repository of your connections or
+  a public repository's https address, on a machine of its own at a public address, and `wm deployments` lists, reads,
+  changes, redeploys and deletes deployments. Both are in wm's help now, and no longer say they are not open yet.
+- `wm-mcp` lists Deploy's six tools: `deploy_app`, `list_deployments`, `get_deployment`, `redeploy`, `delete_deployment`
+  and `deployment_logs`. It sends a folder only from where it was started or the folders named in
+  `WHEELMACHINE_DEPLOY_ROOTS`, never a home folder or one of settings.
+- `wm machines repos` says which repositories a machine reaches, to read or to push too, and whether a push will go, and
+  `wm machines pull-request` opens a pull request from a branch: on GitHub at once, under the name of the person who holds
+  the machine, and on GitLab it prints the line of git to run in the machine's clone, which opens a merge request as it
+  pushes. Only the person who holds the machine may open one, and neither merges, approves or closes anything.
+  `wm-mcp` has `list_repositories` and `open_pull_request`, and the Go client `MachineRepositories` and `OpenPullRequest`.
+- `wm-mcp` has `search_docs`: it looks in the docs and reads a page of them, so that an agent need not guess a flag or a
+  route. It needs no key, and keeps a copy of the docs to use when they cannot be reached.
+- A machine pauses no sooner than 30 minutes idle, and one set to less now waits 30 minutes. `wm machines create`'s
+  `--idle-after` is 30m to 24h, and 30m when left out, where it was 5m; `wm-mcp`'s `create_machine` takes `idle_after_s`
+  from 1800, and 1800 when left out.
+- A machine whose internet is `closed` now has none, in or out, and no name lookups: a public port of it answers only as a
+  private one. Whatever a machine's internet, its team's repositories and folders still work where given. The words of
+  `wm` and `wm-mcp` say so.
+- Built with Go 1.27.4, for its security fixes.
+
 ## 0.1.4
 
 - `wm` sees a machine's desktop and works it: `wm machines screenshot` writes a picture of it to a file, `click` and

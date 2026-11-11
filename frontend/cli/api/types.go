@@ -319,7 +319,8 @@ type MachineBatchCreate struct {
 	IdempotencyKey string `json:"-"` // made for the call when empty
 }
 
-// MachineBatch is each machine of a batch, in the order asked: made, on its way, or refused.
+// MachineBatch is each machine of a batch, in the order asked: made, on its way, or refused. Type is the type they were
+// made from; "" for a batch made as its call said, with none.
 type MachineBatch struct {
 	Object  string         `json:"object"`
 	Project string         `json:"project"`
@@ -391,7 +392,7 @@ type MachineCreate struct {
 	Secrets []string          `json:"secrets,omitempty"` // secrets its commands get; needs cloud:secrets:write
 	Network *Network          `json:"network,omitempty"` // what it may reach on the internet (open when left out)
 	// SleepWhenIdle false keeps it running, and charged, until it is paused or stopped; nil or true lets it pause by
-	// itself once it is idle for IdleAfterS seconds (nil: the API's 300) - nothing reached it, its programs quiet.
+	// itself once it is idle for IdleAfterS seconds (nil: the API's 1800, half an hour) - nothing reached it, its programs quiet.
 	SleepWhenIdle *bool `json:"sleep_when_idle,omitempty"`
 	IdleAfterS    *int  `json:"idle_after_s,omitempty"`
 	// PutAwayAfterS archives it once nobody has used it this long, in seconds (an hour to 30 days); nil for no time.
@@ -418,10 +419,11 @@ type MachineUpdate struct {
 	Network *Network           `json:"network,omitempty"` // what it may reach on the internet, said whole; applied at once
 }
 
-// Network is what a machine may reach on the internet: Internet is "open" (the whole internet),
-// "closed" (no internet, though name lookups and some sites we host still work), or "allowed", where Allow
+// Network is what a machine may reach on the internet: Internet is "open" (the whole internet), "closed" (no
+// internet in or out and no name lookups: a public port answers only as a private one), or "allowed", where Allow
 // lists the names (exact or a leading *.) for HTTP and HTTPS and the IPv4/IPv6 ranges (CIDRs) for other ports it may
-// reach. Allow is empty for open and closed.
+// reach. Allow is empty for open and closed. Whatever it is, your team's repositories and folders still work where
+// given.
 type Network struct {
 	Internet string   `json:"internet"`
 	Allow    []string `json:"allow"`

@@ -3,6 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"wheelmachine/frontend/cli/api"
 )
 
 const codeHelp = `Usage: wm code [command]
@@ -18,6 +23,8 @@ const codeHelp = `Usage: wm code [command]
 A machine reaches its team's repositories with plain git (git clone https://github.com/acme/api.git) and never holds
 a token. A fetch works only for a repository its team may read, and a push only for one it may write.
 Owners and admins connect GitHub and GitLab; a team's full managers, owners and admins give it repositories.
+
+wm machines repos <machine> says what one machine reaches; wm machines pull-request opens a pull request from it.
 `
 
 // wm code: code access - the GitHub and GitLab an account connects, and the repositories its teams are given.
@@ -134,4 +141,115 @@ func (a *app) codeCmd(ctx context.Context, args []string) error {
 		return c.RevokeCode(ctx, words[1], words[2])
 	}
 	return usagef("%s", "wm code [connect|disconnect|repos|grant|revoke]: see wm code -h")
+}
+
+// wm machines repos: the repositories a machine reaches, and whether a push will go.
+func (a *app) machinesRepos(ctx context.Context, args []string) error {
+	fs := a.flags("machines repos", "wm machines repos <machine>", "The GitHub and GitLab repositories a machine reaches now, each to read or to "+
+		"push too, and whether a push will go: its holder's own account linked there. The branches no machine pushes to are said below them.")
+	words, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if err := count(words, 1, 1, "which machine"); err != nil {
+		return err
+	}
+	c, id, err := a.machine(ctx, words[0])
+	if err != nil {
+		return err
+	}
+	list, err := c.MachineRepositories(ctx, id)
+	if err != nil {
+		return err
+	}
+	if list.Data == nil {
+		list.Data = []api.MachineRepository{}
+	}
+	switch {
+	case a.json:
+		return a.printJSON(list)
+	case a.quiet:
+		for _, r := range list.Data {
+			fmt.Fprintln(a.stdout, r.Repository)
+		}
+		return nil
+	}
+	t := a.table("REPOSITORY", "HOST", "ACCESS", "A PUSH")
+	for _, r := range list.Data {
+		access, push := "read", "not to this one"
+		if r.Access == "write" {
+			access, push = "read and push", "goes"
+			if !r.CanPush {
+				push = "needs its holder's own account linked: the Code page, Your accounts"
+			}
+		}
+		t.row(r.Repository, r.Host, access, push)
+	}
+	t.flush()
+	if len(list.Data) > 0 && len(list.Protected) > 0 {
+		fmt.Fprintf(a.stdout, "\nNo machine pushes to %s: changes reach them through a pull request, or a merge request on GitLab.\n", strings.Join(list.Protected, ", "))
+	}
+	return nil
+}
+
+// wm machines pull-request: a pull request from a machine, or on GitLab the line of git that opens one.
+func (a *app) machinesPullRequest(ctx context.Context, args []string) error {
+	fs := a.flags("machines pull-request", "wm machines pull-request <machine> <repository> --head <branch> --base <branch> --title <words>",
+		"Open a pull request from a branch of a repository the machine may push to. Only the person who holds the machine may ask. This does not "+
+			"merge, approve or close anything: people do. On GitHub it opens under the holder's own linked account. On GitLab it prints the line of "+
+			"git to run in the clone in the machine, which opens a merge request as it pushes; a body with a line beginning with / is refused there, "+
+			"as GitLab would run that line as a command.")
+	head := fs.String("head", "", "the branch with the changes")
+	base := fs.String("base", "", "the branch to merge them into; it may be a protected one")
+	title := fs.String("title", "", "one line saying what it changes")
+	body := fs.String("body", "", "what it changes and how it was tested")
+	bodyFile := fs.String("body-file", "", "read the body from this file; - for standard input")
+	draft := fs.Bool("draft", false, "open it as a draft")
+	host := fs.String("host", "", "the repository's host, only where the same path is on two of them")
+	words, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if err := count(words, 2, 2, "which machine and which repository"); err != nil {
+		return err
+	}
+	if *head == "" || *base == "" || *title == "" {
+		return usagef("%s", "wm machines pull-request needs --head, --base and --title")
+	}
+	if *body != "" && *bodyFile != "" {
+		return usagef("%s", "give --body or --body-file, not both")
+	}
+	text := *body
+	if *bodyFile != "" {
+		var read []byte
+		if *bodyFile == "-" {
+			read, err = io.ReadAll(a.stdin)
+		} else {
+			read, err = os.ReadFile(*bodyFile)
+		}
+		if err != nil {
+			return err
+		}
+		text = string(read)
+	}
+	c, id, err := a.machine(ctx, words[0])
+	if err != nil {
+		return err
+	}
+	p, err := c.OpenPullRequest(ctx, id, api.PullRequestCreate{Repository: words[1], Host: *host, Head: *head, Base: *base, Title: *title, Body: text, Draft: *draft})
+	if err != nil {
+		return err
+	}
+	switch {
+	case a.json:
+		return a.printJSON(p)
+	case p.Opened && p.URL != nil:
+		fmt.Fprintln(a.stdout, *p.URL)
+	case p.Run != nil:
+		if p.Note != nil && !a.quiet {
+			fmt.Fprintln(a.stderr, *p.Note)
+		}
+		fmt.Fprintln(a.stdout, *p.Run)
+	}
+	return nil
 }

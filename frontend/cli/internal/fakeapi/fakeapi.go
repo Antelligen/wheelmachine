@@ -73,6 +73,13 @@ type Server struct {
 	// Code is what GET /v1/code answers; Repos what a connection reaches; PUT /v1/projects/{id}/code gives a team one
 	Code  api.Code
 	Repos []api.CodeRepo
+	// MachineRepos is what GET /v1/machines/{id}/repositories answers of any machine, and the branches it says are
+	// protected; Pulls each pull request asked of POST /v1/machines/{id}/pull-requests, by the machine's id. One of a
+	// repository a machine reaches on GitHub opens; on GitLab it answers the push that opens one. MachineRepos says which,
+	// as the API does; one it does not name is refused.
+	MachineRepos []api.MachineRepository
+	Protected    []string
+	Pulls        map[string][]api.PullRequestCreate
 	// Folders is what GET /v1/folders answers; FolderFiles each folder's files, by "<folder>/<path>", which the routes of
 	// a folder's files read and write
 	Folders     []api.SharedFolder
@@ -334,6 +341,9 @@ func New(t testing.TB) *Server {
 		"GET /v1/secrets/presets":               s.listPresets,
 		"PUT /v1/secrets/{name}":                s.setSecret,
 		"DELETE /v1/secrets/{name}":             s.deleteSecret,
+
+		"GET /v1/machines/{id}/repositories":   s.machineRepos,
+		"POST /v1/machines/{id}/pull-requests": s.openPull,
 
 		"GET /v1/code":                        s.code,
 		"GET /v1/code/connections/{id}/repos": s.codeRepos,
@@ -618,7 +628,7 @@ func (s *Server) newMachine(name, project string, labels map[string]string) *api
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	after, cpus, memory := 300, 2, 4.0
+	after, cpus, memory := 1800, 2, 4.0
 	m := &api.Machine{ID: s.newID("m_"), Object: "machine", Name: name, Project: project, MadeBy: s.madeBy(), HeldBy: s.heldBy(),
 		State: api.StateRunning,
 		Size:  &api.Size{CPUs: 2, MemoryGB: 4, DiskGB: 32}, Location: &api.Location{City: "Helsinki", Country: "FI"},
@@ -1295,8 +1305,8 @@ func (s *Server) createMachine(w http.ResponseWriter, r *http.Request) {
 		if len(in.Labels) > 32 {
 			return 0, nil, &Refusal{Status: 400, Code: "invalid_request", Detail: "a machine holds at most 32 labels"}
 		}
-		if in.IdleAfterS != nil && (*in.IdleAfterS < 60 || *in.IdleAfterS > 86400 || in.SleepIdle != nil && !*in.SleepIdle) {
-			return 0, nil, &Refusal{Status: 400, Code: "invalid_request", Detail: "idle_after_s is between 60 and 86400, for a machine that sleeps when idle"}
+		if in.IdleAfterS != nil && (*in.IdleAfterS < 1800 || *in.IdleAfterS > 86400 || in.SleepIdle != nil && !*in.SleepIdle) {
+			return 0, nil, &Refusal{Status: 400, Code: "invalid_request", Detail: "idle_after_s is 1800 to 86400, for a machine that sleeps when idle: a machine sleeps no sooner than 30 minutes idle"}
 		}
 		if in.CPUs != nil && *in.CPUs == 16 && in.GPU == "" {
 			return 0, nil, &Refusal{Status: 400, Code: "invalid_request", Detail: "16 CPUs are not offered yet: choose 2, 4 or 8"}
@@ -2818,6 +2828,60 @@ func (s *Server) grantCode(w http.ResponseWriter, r *http.Request) {
 		Access: body.Access}
 	s.Code.Grants = append(s.Code.Grants, g)
 	reply(w, 200, g)
+}
+
+// GET /v1/machines/{id}/repositories: the repositories set, of any machine there is.
+func (s *Server) machineRepos(w http.ResponseWriter, r *http.Request) {
+	if s.machine(w, r) == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reply(w, 200, api.MachineRepositories{Object: "list", Data: append([]api.MachineRepository{}, s.MachineRepos...), Protected: append([]string{}, s.Protected...)})
+}
+
+// POST /v1/machines/{id}/pull-requests: opened where one of the repositories set is on GitHub; on GitLab, the push that
+// opens it; of any other, refused as the API refuses one a machine does not reach, or only reads.
+func (s *Server) openPull(w http.ResponseWriter, r *http.Request) {
+	m := s.machine(w, r)
+	if m == nil {
+		return
+	}
+	var ask api.PullRequestCreate
+	if !decode(w, r, &ask, false) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var found *api.MachineRepository
+	for i := range s.MachineRepos {
+		if s.MachineRepos[i].Repository == ask.Repository {
+			found = &s.MachineRepos[i]
+		}
+	}
+	if found == nil {
+		refuse(w, r, Refusal{Status: 404, Code: "not_found", Detail: "this machine does not reach " + ask.Repository + ": ask which repositories it does"})
+		return
+	}
+	if found.Access != "write" {
+		refuse(w, r, Refusal{Status: 403, Code: "forbidden", Detail: "this machine may read " + ask.Repository + ", not push to it: its team was given it to read"})
+		return
+	}
+	if s.Pulls == nil {
+		s.Pulls = map[string][]api.PullRequestCreate{}
+	}
+	s.Pulls[m.ID] = append(s.Pulls[m.ID], ask)
+	p := api.PullRequest{Object: "pull_request", Provider: found.Provider, Host: found.Host, Repository: found.Repository, Head: ask.Head, Base: ask.Base, Draft: ask.Draft}
+	if found.Provider == "gitlab" {
+		run, note := "git push -o merge_request.create -o merge_request.target="+ask.Base+" origin "+ask.Head, "Nothing is open yet: run this in your clone."
+		p.Run, p.Note = &run, &note
+		reply(w, 200, p)
+		return
+	}
+	number := int64(6 + len(s.Pulls[m.ID]))
+	at := fmt.Sprintf("https://%s/%s/pull/%d", found.Host, found.Repository, number)
+	p.Opened, p.Number, p.URL = true, &number, &at
+	reply(w, 201, p)
 }
 
 // GET /v1/folders: the folders set, on.

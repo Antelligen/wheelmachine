@@ -23,10 +23,14 @@ An MCP client starts it and speaks JSON-RPC 2.0 with it, one message a line. It 
 The API key comes from WHEELMACHINE_API_KEY, else from the one wm login kept; the API is at
 WHEELMACHINE_BASE_URL, else https://api.wheelmachine.ai.
 
-Tools: list_machines, create_machine, get_machine, run_command, read_file, write_file,
+search_docs looks in the docs, and needs no key: it reads them from WHEELMACHINE_DOCS_URL, else
+https://docs.wheelmachine.ai, and keeps a copy of them in this computer's cache folder.
+
+Tools: search_docs, list_machines, create_machine, get_machine, run_command, read_file, write_file,
 pause_machine, start_machine, stop_machine, fork_machine, backup_machine, list_backups,
 delete_machine, list_gpus, list_regions, list_secrets, give_secrets, set_network, list_apps,
-turn_app_on, turn_app_off, show_app, open_app, whoami.
+turn_app_on, turn_app_off, show_app, open_app, take_screenshot, use_screen, list_repositories,
+open_pull_request, whoami.
 `
 
 func main() {

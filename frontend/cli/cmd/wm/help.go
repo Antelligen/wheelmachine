@@ -81,6 +81,9 @@ const machinesHelp = `Usage: wm machines <command> [arguments] [flags]
   type <machine> [text]       type on its desktop: the text, or standard input with none
   keys <machine> <keys>...    press keys on its desktop, such as ctrl+c
   scroll <machine> <x> <y>    scroll on its desktop: --dy or --dx notches
+  repos <machine>             the repositories it reaches, and whether a push will go
+  pull-request <machine> <repository>
+                              open a pull request from a branch
 
 Run wm machines <command> -h for its flags.
 `

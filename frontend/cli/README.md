@@ -58,9 +58,10 @@ Choose what a machine can reach on the internet:
     wm machines create --internet allowed --allow api.github.com --allow 140.82.112.0/20
     wm machines network box --internet allowed --allow '*.githubusercontent.com'   # changes it at once, no restart
 
-`open` (the default): the whole internet. `closed`: none of it, though name lookups and some sites we host still work.
-`allowed`: only the addresses of the names you list (HTTP and HTTPS; other sites at those addresses can still answer)
-and the IP ranges you list (other ports).
+`open` (the default): the whole internet. `closed`: none of it, in or out, and no name lookups: a public port answers
+only as a private one. `allowed`: only the addresses of the names you list (HTTP and HTTPS; other sites at those
+addresses can still answer) and the IP ranges you list (other ports). Whatever it is, your team's repositories and
+folders still work where given.
 
 Every command run in a machine gets the secrets it was given as environment variables; a variable the command is
 given itself (`env`) wins over a secret of the same name. A value is never taken from the command line - where the
@@ -86,6 +87,23 @@ else `~/.config/wheelmachine/config.json`, mode 0600. `WHEELMACHINE_BASE_URL` gi
 
 Exit codes: 0 done, 1 the API or the network refused, 2 the command was not right. `wm exec`, `wm sh` and `wm ssh`
 exit with the command's own code.
+
+## Deploy
+
+    wm deploy                                            # the folder you are in: shows what goes, asks in a terminal, waits until it is live
+    wm deploy acme/shop --branch main                    # a repository of your connections
+    wm deploy https://github.com/acme/shop --start "npm start" --port 3000
+    wm deployments ls                                    # their states and addresses
+    wm deployments logs shop --kind app                  # what the app writes
+    wm deployments redeploy shop                         # fetch and build it again: a build that fails leaves the live version
+    wm deployments rm shop                               # it and its machine, with all its files
+
+Each deployment runs on a machine of its own at a public address, and is charged as any machine is, builds included. It
+pauses once nobody has visited for 30 minutes and its app is quiet, and the next visit wakes it, unless `--always-on`; one
+made from a team's machine type pauses as the type says. A folder goes without keys, tokens and settings, what its
+`.gitignore` files name, `node_modules` and links: wm shows what goes and, in a terminal, asks first; without one it asks
+nothing, and the folder you are in goes only with `--yes`. `wm-mcp` has Deploy's tools too. See
+https://docs.wheelmachine.ai/deploy.html.
 
 ## Credit
 
@@ -162,10 +180,14 @@ for the server alone, with only the scopes it needs, is the safest:
 Tools: `list_machines`, `create_machine`, `get_machine`, `run_command`, `read_file`, `write_file`, `pause_machine`,
 `start_machine`, `stop_machine`, `fork_machine`, `backup_machine`, `list_backups`, `delete_machine`, `list_gpus`,
 `list_regions`, `list_secrets`, `give_secrets`, `set_network`, `list_apps`, `turn_app_on`, `turn_app_off`, `show_app`, `open_app`,
-`take_screenshot`, `use_screen`, `whoami`. Each answers compact JSON; `take_screenshot`, and `use_screen` when asked for a
+`take_screenshot`, `use_screen`, `list_repositories`, `open_pull_request`, `whoami`. Each answers compact JSON; `take_screenshot`, and `use_screen` when asked for a
 picture, answer a real picture beside it, which shows whatever is on the screen and goes on to your model's provider. A failed
 call comes back as a result with `isError` and the API's `code` and `detail`. The secrets tools name secrets only: no tool takes
 or answers a value.
+
+`search_docs` looks in the docs, and reads a page of them, so that an agent need not guess a flag or a route. It needs no key. It
+reads the docs from `https://docs.wheelmachine.ai` (`WHEELMACHINE_DOCS_URL` to read them from elsewhere), and keeps a copy in this
+computer's cache folder, which it goes on using when they cannot be reached.
 
 ## The Go client
 

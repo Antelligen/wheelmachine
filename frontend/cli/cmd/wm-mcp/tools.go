@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"wheelmachine/frontend/cli/api"
@@ -43,6 +47,7 @@ var (
 	changes      = annotations{IdempotentHint: true}                        // to a state; again is the same
 	destroys     = annotations{DestructiveHint: true, IdempotentHint: true} // takes something away
 	runsAnything = annotations{DestructiveHint: true, OpenWorldHint: true}  // a command can do anything, reach anywhere
+	makesOutside = annotations{OpenWorldHint: true}                         // adds something new each call, on another service
 )
 
 // checker is arguments that check themselves before anything is called.
@@ -63,13 +68,19 @@ func define[A any](name, title, description string, schema json.RawMessage, ann 
 					return nil, err
 				}
 			}
-			c, err := client()
-			if err != nil {
-				return nil, err
+			var c *api.Client
+			if _, open := any(&a).(needsNoKey); !open {
+				var err error
+				if c, err = client(); err != nil {
+					return nil, err
+				}
 			}
 			return do(ctx, c, &a)
 		}}
 }
+
+// needsNoKey is arguments of a tool that calls no API, and so works before anyone has signed in.
+type needsNoKey interface{ needsNoKey() }
 
 // object is a JSON Schema for arguments: these properties, these required, no others.
 func object(required []string, props ...string) json.RawMessage {
@@ -90,7 +101,7 @@ const (
 	pApp     = `"app":{"type":"string","pattern":"^[a-z0-9-]{1,32}$","description":"The app's name, as list_apps gives it, such as desktop."}`
 	pAccess  = `"access_s":{"type":"integer","minimum":60,"maximum":3600,"default":1800,"description":"How long the browser that opens the link may reach the app, in seconds."}`
 	pScale   = `"scale":{"type":"number","minimum":0.125,"maximum":1,"default":0.5,"description":"How far the picture is drawn down: 1, or one over a whole number up to 8. The desktop is 2880 x 1800 pixels, so 0.5 gives 1440 x 900."}`
-	pNetwork = `"network":{"type":"object","additionalProperties":false,"required":["internet"],"properties":{"internet":{"type":"string","enum":["open","closed","allowed"],"description":"open (the whole internet), closed (no internet, though name lookups and some sites we host still work), or allowed (only what allow lists)."},"allow":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":253},"description":"For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."}},"description":"What it may reach on the internet."}`
+	pNetwork = `"network":{"type":"object","additionalProperties":false,"required":["internet"],"properties":{"internet":{"type":"string","enum":["open","closed","allowed"],"description":"open (the whole internet), closed (no internet in or out and no name lookups: a public port answers only as a private one), or allowed (only what allow lists). Whatever it is, your team's repositories and folders still work where given."},"allow":{"type":"array","maxItems":64,"items":{"type":"string","maxLength":253},"description":"For allowed only: domain names (exact, or a leading *. for every name under it) for HTTP and HTTPS, and IPv4/IPv6 ranges (CIDRs) for other ports."}},"description":"What it may reach on the internet."}`
 )
 
 // tools is every tool, as tools.json holds them; offered is those tools/list gives.
@@ -110,6 +121,15 @@ var deployListed = api.DeployOpen
 
 func baseTools() []tool {
 	return []tool{
+		define("search_docs", "Search the docs",
+			"Look in Wheelmachine's docs rather than guess a flag, a route or a limit. Give query, a question or some words: it answers the "+
+				"best few pages, each with its title, address and a short passage. Give page, one of those addresses, to read that page or "+
+				"that part of it.",
+			object(nil,
+				`"query":{"type":"string","minLength":1,"maxLength":500,"description":"A question or some words, in English."}`,
+				`"page":{"type":"string","minLength":1,"maxLength":300,"description":"An address from an answer, to read instead of searching."}`,
+				`"limit":{"type":"integer","minimum":1,"maximum":10,"default":5,"description":"The most answers given."}`),
+			reads, searchDocs),
 		define("list_machines", "List machines",
 			"List the account's machines, newest first, a page at a time; narrow by project, state or labels. Answers "+
 				`{"object":"list","data":[machine...],"next":...}: give next as after for the page after it; next is null on the last page.`,
@@ -135,7 +155,7 @@ func baseTools() []tool {
 				`"cpus":{"type":"integer","enum":[2,4,8],"default":2,"description":"Its CPUs, with 2 GB of memory each; not with gpu, whose size comes with it."}`,
 				pLabels,
 				`"sleep_when_idle":{"type":"boolean","default":true,"description":"False: it never pauses by itself, and runs (charged) until it is paused or stopped."}`,
-				`"idle_after_s":{"type":"integer","minimum":60,"maximum":86400,"default":300,"description":"How long it must be idle before it pauses by itself."}`,
+				`"idle_after_s":{"type":"integer","minimum":1800,"maximum":86400,"default":1800,"description":"How long it must be idle before it pauses by itself: 1800 (30 minutes, the least) to 86400."}`,
 				`"desktop":{"type":"boolean","default":false,"description":"Turn its desktop on behind the answer, so that a first take_screenshot finds it ready. It is off otherwise, and its first start can take up to a minute."}`,
 				pSecrets, pNetwork, pWaitS),
 			makes, createMachine),
@@ -230,9 +250,10 @@ func baseTools() []tool {
 				`"secrets":{"type":"array","maxItems":200,"uniqueItems":true,"items":{"type":"string","pattern":"^[A-Z_][A-Z0-9_]{0,63}$"},"description":"Every secret it is to get, by name; [] for none. Giving needs a key with the cloud:secrets:write scope, of the whole account."}`),
 			changes, giveSecrets),
 		define("set_network", "Set a machine's internet",
-			"Set what a machine may reach on the internet - open (the whole internet), closed (no internet, though "+
-				"name lookups and some sites we host still work), or allowed only to the names and ranges you "+
-				"list. It takes effect at once, without a restart. "+
+			"Set what a machine may reach on the internet - open (the whole internet), closed (no internet in or out "+
+				"and no name lookups: a public port answers only as a private one), or allowed only to the names and "+
+				"ranges you list. Whatever it is, your team's repositories and folders still work where given. It takes "+
+				"effect at once, without a restart. "+
 				"Answers with the machine.",
 			object([]string{"machine", "network"}, pMachine, pNetwork),
 			changes, setNetwork),
@@ -297,6 +318,29 @@ func baseTools() []tool {
 				`"then_screenshot":{"type":"boolean","default":false,"description":"Answer with a picture of the whole screen, at this scale, once the actions are done."}`,
 				`"settle_ms":{"type":"integer","minimum":0,"maximum":10000,"default":500,"description":"How long to wait before that picture, so that the screen has caught up."}`),
 			runsAnything, useScreen),
+		define("list_repositories", "List a machine's repositories",
+			"The GitHub and GitLab repositories a machine reaches now: each one's access, read or write; linked, whether the "+
+				"person who holds the machine has linked their own account there; and can_push, whether a push will go, which on a company's "+
+				"own GitLab needs no link. protected_branches are the branches no machine pushes to. A machine reaches them whatever its "+
+				"internet.",
+			object([]string{"machine"}, pMachine), reads, listRepositories),
+		define("open_pull_request", "Open a pull request",
+			"Open a pull request from a branch, as the last step of your work. Only the person who holds the machine may ask. This does not "+
+				"merge, approve or close anything: people do. head is a branch of the same repository that the team's machines may push to; forks "+
+				"are not taken. base may be a protected branch. On GitHub, push the branch first: it opens at once under the holder's own linked "+
+				"account, and answers its number and url. On GitLab it answers opened false and run: a line of git to run in your clone with "+
+				"run_command, as your last push, which opens a merge request and prints its address. That push has to send new commits, and goes "+
+				"under the holder's linked account, or on a company's own GitLab its group's token. A body with a line beginning with /, with spaces "+
+				"before it or not, is refused on GitLab, which would run that line as a command: write \\/ to show one.",
+			object([]string{"machine", "repository", "head", "base", "title"}, pMachine,
+				`"repository":{"type":"string","minLength":1,"maxLength":512,"description":"Its path on its host, as list_repositories gives it, such as acme/api."}`,
+				`"host":{"type":"string","maxLength":253,"description":"Its host, only where the same path is on two of them, such as github.com."}`,
+				`"head":{"type":"string","minLength":1,"maxLength":200,"description":"The branch with the changes."}`,
+				`"base":{"type":"string","minLength":1,"maxLength":200,"description":"The branch to merge them into, such as main."}`,
+				`"title":{"type":"string","minLength":1,"maxLength":255,"description":"One line saying what it changes."}`,
+				`"body":{"type":"string","maxLength":60000,"description":"What it changes and how it was tested, at most 60000 bytes. On GitLab, no line of it may begin with /."}`,
+				`"draft":{"type":"boolean","default":false,"description":"Open it as a draft."}`),
+			makesOutside, openPullRequest),
 		define("whoami", "Who am I",
 			"The account and API key in use: the key's scopes and projects, and whether the account can spend.",
 			object(nil), reads, whoami),
@@ -396,6 +440,9 @@ func failureOf(err error) failure {
 		return failure{Code: api.CodeUnavailable, Detail: ce.Error()}
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return failure{Code: api.CodeTimeout, Detail: "the call ended before it was answered"}
+	}
+	if p := (*docsProblem)(nil); errors.As(err, &p) {
+		return failure{Status: p.Status, Code: p.Code, Detail: p.Detail, RetryAfterS: p.RetryAfterS}
 	}
 	return failure{Code: api.CodeInternal, Detail: err.Error()}
 }
@@ -974,6 +1021,50 @@ func listApps(ctx context.Context, c *api.Client, a *machineArgs) (any, error) {
 	return map[string]any{"object": "list", "data": apps}, nil
 }
 
+func listRepositories(ctx context.Context, c *api.Client, a *machineArgs) (any, error) {
+	id, err := c.FindMachine(ctx, a.Machine)
+	if err != nil {
+		return nil, err
+	}
+	list, err := c.MachineRepositories(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if list.Data == nil {
+		list.Data = []api.MachineRepository{}
+	}
+	return list, nil
+}
+
+type pullArgs struct {
+	Machine    string `json:"machine"`
+	Repository string `json:"repository"`
+	Host       string `json:"host"`
+	Head       string `json:"head"`
+	Base       string `json:"base"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Draft      bool   `json:"draft"`
+}
+
+func (a *pullArgs) check() error {
+	if err := needMachine(a.Machine); err != nil {
+		return err
+	}
+	if strings.TrimSpace(a.Repository) == "" || strings.TrimSpace(a.Head) == "" || strings.TrimSpace(a.Base) == "" || strings.TrimSpace(a.Title) == "" {
+		return inputf("open_pull_request needs repository, head, base and title")
+	}
+	return nil
+}
+
+func openPullRequest(ctx context.Context, c *api.Client, a *pullArgs) (any, error) {
+	id, err := c.FindMachine(ctx, a.Machine)
+	if err != nil {
+		return nil, err
+	}
+	return c.OpenPullRequest(ctx, id, api.PullRequestCreate{Repository: a.Repository, Host: a.Host, Head: a.Head, Base: a.Base, Title: a.Title, Body: a.Body, Draft: a.Draft})
+}
+
 func turnAppOn(ctx context.Context, c *api.Client, a *appArgs) (any, error) {
 	id, err := c.FindMachine(ctx, a.Machine)
 	if err != nil {
@@ -1061,6 +1152,27 @@ func listRegions(ctx context.Context, c *api.Client, _ *noArgs) (any, error) {
 }
 
 func whoami(ctx context.Context, c *api.Client, _ *noArgs) (any, error) { return c.Me(ctx) }
+
+// What tells this server to read the docs from anywhere but their own address.
+const envDocsURL = "WHEELMACHINE_DOCS_URL"
+
+// theDocs is the docs as search_docs reads them (docs.go), made when first needed, with a copy kept in this computer's cache
+// folder for the next time this server starts. Its log goes where this server's does.
+var theDocs = sync.OnceValue(func() *docsCopy {
+	site := os.Getenv(envDocsURL)
+	if site == "" {
+		site = docsPublic
+	}
+	kept := ""
+	if dir, err := os.UserCacheDir(); err == nil {
+		kept = filepath.Join(dir, "wheelmachine", "docs-pages.json")
+	}
+	return newDocsCopy(site, kept, "wm-mcp/"+api.Version, log.New(os.Stderr, "wm-mcp: ", log.LstdFlags).Printf)
+})
+
+func searchDocs(ctx context.Context, _ *api.Client, a *docsArgs) (any, error) {
+	return theDocs().answer(ctx, a)
+}
 
 // A picture and what is said of it, as a tool's value: an image block, and the rest of the answer in words beside it.
 type pictured struct {

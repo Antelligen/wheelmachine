@@ -90,8 +90,8 @@ func TestHelpAndUsageErrors(t *testing.T) {
 	if r := h.wm("", "help", "exec").must(t, 0); !strings.Contains(r.stdout, "wm exec <machine>") {
 		t.Fatalf("help %q", r.stdout)
 	}
-	// a flag whose zero means "as the words say" shows no default of 0s: --idle-after left out is 5m
-	if r := h.wm("", "machines", "create", "-h").must(t, 0); strings.Contains(r.stdout, "(0s)") || !strings.Contains(r.stdout, "5m when left out)\n") ||
+	// a flag whose zero means "as the words say" shows no default of 0s: --idle-after left out is 30m
+	if r := h.wm("", "machines", "create", "-h").must(t, 0); strings.Contains(r.stdout, "(0s)") || !strings.Contains(r.stdout, "30m when left out)\n") ||
 		!strings.Contains(r.stdout, "how long to wait for it to run (10m0s)") {
 		t.Fatalf("help %q", r.stdout)
 	}
@@ -442,7 +442,7 @@ func TestAMachinePausesWhenIdleUnlessItIsMadeNotTo(t *testing.T) {
 	if _, said := asked()["sleep_when_idle"]; said {
 		t.Fatalf("said what was not asked: %v", asked())
 	}
-	if r = h.wm("", "machines", "get", "job").must(t, 0); !strings.Contains(r.stdout, "after 5m 00s idle") {
+	if r = h.wm("", "machines", "get", "job").must(t, 0); !strings.Contains(r.stdout, "after 30m 00s idle") {
 		t.Fatalf("detail:\n%s", r.stdout)
 	}
 	h.wm("", "machines", "create", "--name", "long", "--idle-after", "1h").must(t, 0)
@@ -456,10 +456,16 @@ func TestAMachinePausesWhenIdleUnlessItIsMadeNotTo(t *testing.T) {
 	if r = h.wm("", "machines", "get", "on").must(t, 0); !strings.Contains(r.stdout, "never by itself") {
 		t.Fatalf("detail:\n%s", r.stdout)
 	}
-	for _, args := range [][]string{{"--no-sleep", "--idle-after", "10m"}, {"--idle-after", "30s"}, {"--idle-after", "25h"}, {"--idle-after", "90500ms"}} {
+	// (under half an hour - 5m, the old default, among them - is refused before it is sent: a machine pauses no sooner)
+	for _, args := range [][]string{{"--no-sleep", "--idle-after", "10m"}, {"--idle-after", "30s"}, {"--idle-after", "5m"}, {"--idle-after", "29m59s"},
+		{"--idle-after", "25h"}, {"--idle-after", "90500ms"}} {
 		if r := h.wm("", append([]string{"machines", "create"}, args...)...).must(t, 2); !strings.Contains(r.stderr, "--idle-after") {
 			t.Fatalf("%v: %q", args, r.stderr)
 		}
+	}
+	h.wm("", "machines", "create", "--name", "half", "--idle-after", "30m").must(t, 0)
+	if body := asked(); body["idle_after_s"] != 1800.0 {
+		t.Fatalf("body %v", body)
 	}
 }
 
@@ -2084,6 +2090,73 @@ func TestFolders(t *testing.T) {
 	help := h.wm("", "folders", "help").must(t, 0).stdout
 	if !strings.Contains(help, `"Design:notes/plan.md"`) || strings.Contains(help, `put plan.md "My files`) || !strings.Contains(help, "not limited to a team") {
 		t.Fatalf("folders help:\n%s", help)
+	}
+}
+
+// wm machines repos says what a machine reaches and whether a push will go; wm machines pull-request opens one on GitHub,
+// and on GitLab prints the line of git that opens one.
+func TestMachinesReposAndPullRequest(t *testing.T) {
+	h := newHarness(t)
+	box := h.api.AddMachine("box", api.StateRunning)
+	h.api.MachineRepos = []api.MachineRepository{
+		{Object: "machine_repository", Provider: "github", Host: "github.com", Repository: "acme/api", Access: "write", Linked: true, CanPush: true},
+		{Object: "machine_repository", Provider: "gitlab", Host: "gitlab.com", Repository: "team/site", Access: "write"},
+		{Object: "machine_repository", Provider: "github", Host: "github.com", Repository: "acme/docs", Access: "read", Linked: true},
+	}
+	h.api.Protected = []string{"main", "release/**"}
+	r := h.wm("", "machines", "repos", "box").must(t, 0)
+	for _, want := range []string{"acme/api", "github.com", "read and push", "goes", "team/site", "needs its holder's own account linked", "or a merge request on GitLab", "acme/docs", "not to this one", "No machine pushes to main, release/**"} {
+		if !strings.Contains(r.stdout, want) {
+			t.Fatalf("repos: no %q in\n%s", want, r.stdout)
+		}
+	}
+	if r := h.wm("", "machines", "repos", "box", "--quiet").must(t, 0); r.stdout != "acme/api\nteam/site\nacme/docs\n" {
+		t.Fatalf("repos, quiet:\n%s", r.stdout)
+	}
+	var list api.MachineRepositories
+	if r := h.wm("", "machines", "repos", "box", "--json").must(t, 0); json.Unmarshal([]byte(r.stdout), &list) != nil || len(list.Data) != 3 || !list.Data[0].CanPush || len(list.Protected) != 2 {
+		t.Fatalf("repos, as JSON:\n%s", r.stdout)
+	}
+
+	// on GitHub: opened, its address said; what was asked, as it was given
+	r = h.wm("", "machines", "pull-request", "box", "acme/api", "--head", "agent/a", "--base", "main", "--title", "A change", "--body", "Why.", "--draft").must(t, 0)
+	if strings.TrimSpace(r.stdout) != "https://github.com/acme/api/pull/7" {
+		t.Fatalf("opened:\n%s", r.stdout)
+	}
+	req, _ := h.api.Last(http.MethodPost, "/v1/machines/"+box.ID+"/pull-requests")
+	var sent map[string]any
+	if json.Unmarshal(req.Body, &sent) != nil || sent["repository"] != "acme/api" || sent["head"] != "agent/a" || sent["base"] != "main" || sent["title"] != "A change" ||
+		sent["body"] != "Why." || sent["draft"] != true || sent["host"] != nil || req.Header.Get("Idempotency-Key") == "" {
+		t.Fatalf("asked %s %v", req.Body, req.Header)
+	}
+	// its body from a file, or from standard input
+	file := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(file, []byte("From a file.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.wm("", "machines", "pull-request", "box", "acme/api", "--head", "agent/b", "--base", "main", "--title", "T", "--body-file", file).must(t, 0)
+	req, _ = h.api.Last(http.MethodPost, "/v1/machines/"+box.ID+"/pull-requests")
+	if json.Unmarshal(req.Body, &sent) != nil || sent["body"] != "From a file.\n" {
+		t.Fatalf("from a file: %s", req.Body)
+	}
+	h.wm("From its input.", "machines", "pull-request", "box", "acme/api", "--head", "agent/c", "--base", "main", "--title", "T", "--body-file", "-").must(t, 0)
+	req, _ = h.api.Last(http.MethodPost, "/v1/machines/"+box.ID+"/pull-requests")
+	if json.Unmarshal(req.Body, &sent) != nil || sent["body"] != "From its input." {
+		t.Fatalf("from its input: %s", req.Body)
+	}
+	// on GitLab: the line to run on its standard output, what to do with it beside it
+	r = h.wm("", "machines", "pull-request", "box", "team/site", "--head", "agent/a", "--base", "main", "--title", "T").must(t, 0)
+	if !strings.HasPrefix(r.stdout, "git push -o merge_request.create") || !strings.Contains(r.stderr, "Nothing is open yet") {
+		t.Fatalf("on GitLab:\n%s\n%s", r.stdout, r.stderr)
+	}
+	// refused as the API refuses it; and what is missing said before anything is asked
+	if r := h.wm("", "machines", "pull-request", "box", "acme/docs", "--head", "a", "--base", "main", "--title", "T").must(t, 1); !strings.Contains(r.stderr, "its team was given it to read") {
+		t.Fatalf("one it reads: %s", r.stderr)
+	}
+	for _, args := range [][]string{{"machines", "repos"}, {"machines", "pull-request", "box"}, {"machines", "pull-request", "box", "acme/api", "--base", "main", "--title", "T"},
+		{"machines", "pull-request", "box", "acme/api", "--head", "a", "--title", "T"}, {"machines", "pull-request", "box", "acme/api", "--head", "a", "--base", "main"},
+		{"machines", "pull-request", "box", "acme/api", "--head", "a", "--base", "main", "--title", "T", "--body", "x", "--body-file", file}} {
+		h.wm("", args...).must(t, 2)
 	}
 }
 

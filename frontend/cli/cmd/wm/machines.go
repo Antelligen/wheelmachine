@@ -42,6 +42,9 @@ var machineCommands = map[string]subcommand{
 	"type":       (*app).machinesType,
 	"keys":       (*app).machinesKeys,
 	"scroll":     (*app).machinesScroll,
+	// its repositories, and a pull request from it (code.go)
+	"repos":        (*app).machinesRepos,
+	"pull-request": (*app).machinesPullRequest,
 }
 
 // labelFlag gathers key=value flags.
@@ -230,7 +233,7 @@ func (a *app) machinesCreate(ctx context.Context, args []string) error {
 	fs.Var(&allow, "allow", "with --internet allowed, a `NAME` (exact or *.under it) for web, or an IP range (CIDR) for other ports; repeat for more")
 	noSleep := fs.Bool("no-sleep", false, "never pause by itself: it runs, and is charged, until it is paused or stopped")
 	idleAfter := fs.Duration("idle-after", 0, "pause by itself once nothing has reached it, and its programs have been quiet, this long "+
-		"(1m to 24h; 5m when left out)")
+		"(30m to 24h; 30m when left out)")
 	putAway := fs.Duration("put-away", 0, "archive it once nobody has used it this long (1h to 720h)")
 	kind := fs.String("type", "", "make it as one of its team's machine types says, by name or id (wm machines types): not with "+
 		"--cpus, --gpu, --internet, --no-sleep, --idle-after, --put-away or --desktop")
@@ -254,8 +257,9 @@ func (a *app) machinesCreate(ctx context.Context, args []string) error {
 	if *noSleep && *idleAfter != 0 {
 		return usagef("--idle-after is for a machine that pauses when idle; --no-sleep never does")
 	}
-	if *idleAfter != 0 && (*idleAfter%time.Second != 0 || *idleAfter < time.Minute || *idleAfter > 24*time.Hour) {
-		return usagef("--idle-after is whole seconds from 1m to 24h")
+	// (no sooner than half an hour: the API refuses less, whoever asks)
+	if *idleAfter != 0 && (*idleAfter%time.Second != 0 || *idleAfter < 30*time.Minute || *idleAfter > 24*time.Hour) {
+		return usagef("--idle-after is whole seconds from 30m to 24h: a machine pauses no sooner than 30 minutes idle")
 	}
 	if *putAway != 0 && (*putAway%time.Second != 0 || *putAway < time.Hour || *putAway > 720*time.Hour) {
 		return usagef("--put-away is whole seconds from 1h to 720h")

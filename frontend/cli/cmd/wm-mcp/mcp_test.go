@@ -225,7 +225,7 @@ func TestToolsList(t *testing.T) {
 			if ann["destructiveHint"] != true || ann["readOnlyHint"] != false {
 				t.Fatalf("%s is destructive: %v", tl["name"], ann)
 			}
-		case "get_machine", "list_machines", "list_backups", "read_file", "list_gpus", "list_regions", "list_secrets", "list_apps", "whoami":
+		case "get_machine", "list_machines", "list_backups", "read_file", "list_gpus", "list_regions", "list_secrets", "list_apps", "list_repositories", "whoami":
 			if ann["readOnlyHint"] != true {
 				t.Fatalf("%s only reads: %v", tl["name"], ann)
 			}
@@ -242,9 +242,12 @@ func TestToolsList(t *testing.T) {
 			if ann["readOnlyHint"] != false || ann["destructiveHint"] != false {
 				t.Fatalf("%s does more than read: %v", tl["name"], ann)
 			}
-		case "create_machine", "fork_machine", "backup_machine", "turn_app_on", "open_app":
+		case "create_machine", "fork_machine", "backup_machine", "turn_app_on", "open_app", "open_pull_request":
 			if ann["readOnlyHint"] != false || ann["destructiveHint"] != false || ann["idempotentHint"] != false {
 				t.Fatalf("%s makes something new each call: %v", tl["name"], ann)
+			}
+			if tl["name"] == "open_pull_request" && (ann["openWorldHint"] != true || !strings.Contains(tl["description"].(string), "does not merge, approve or close anything")) {
+				t.Fatalf("open_pull_request reaches another service, and leaves merging to people: %v", tl)
 			}
 		}
 		props, _ := schema["properties"].(map[string]any)
@@ -261,9 +264,10 @@ func TestToolsList(t *testing.T) {
 			}
 		}
 	}
-	want := "list_machines create_machine get_machine run_command read_file write_file pause_machine start_machine stop_machine " +
+	want := "search_docs list_machines create_machine get_machine run_command read_file write_file pause_machine start_machine stop_machine " +
 		"fork_machine backup_machine list_backups delete_machine list_gpus list_regions list_secrets give_secrets set_network list_apps " +
-		"turn_app_on turn_app_off show_app open_app take_screenshot use_screen whoami"
+		"turn_app_on turn_app_off show_app open_app take_screenshot use_screen list_repositories open_pull_request whoami " +
+		"deploy_app list_deployments get_deployment redeploy delete_deployment deployment_logs"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools %v", names)
 	}
@@ -273,6 +277,54 @@ func TestToolsList(t *testing.T) {
 	again := ok(t, s.request(3, "tools/list", nil))
 	if a, b := compact(res), compact(again); a != b {
 		t.Fatal("the list is the same every time")
+	}
+}
+
+func TestListRepositoriesAndOpenPullRequest(t *testing.T) {
+	f := fakeapi.New(t)
+	web := f.AddMachine("web", api.StateRunning)
+	f.MachineRepos = []api.MachineRepository{
+		{Object: "machine_repository", Provider: "github", Host: "github.com", Repository: "acme/api", Access: "write", Linked: true, CanPush: true},
+		{Object: "machine_repository", Provider: "gitlab", Host: "gitlab.com", Repository: "team/site", Access: "write", Linked: true, CanPush: true},
+		{Object: "machine_repository", Provider: "github", Host: "github.com", Repository: "acme/docs", Access: "read", Linked: true},
+	}
+	f.Protected = []string{"main", "master", "release/**"}
+	s := start(t, connectTo(f))
+	s.initialize("2025-11-25")
+	isErr, list := s.tool(2, "list_repositories", map[string]any{"machine": "web"})
+	data, _ := list["data"].([]any)
+	if isErr || list["object"] != "list" || len(data) != 3 || fmt.Sprint(list["protected_branches"]) != "[main master release/**]" {
+		t.Fatalf("the list: %v", list)
+	}
+	if row := data[0].(map[string]any); row["repository"] != "acme/api" || row["access"] != "write" || row["linked"] != true || row["can_push"] != true || row["push"] != nil {
+		t.Fatalf("a repository: %v", row)
+	}
+	// on GitHub: opened, its number and address; what was asked, as it was given
+	isErr, opened := s.tool(3, "open_pull_request", map[string]any{"machine": "web", "repository": "acme/api", "head": "agent/a", "base": "main", "title": "A change", "body": "Why.", "draft": true})
+	if isErr || opened["opened"] != true || opened["number"] != 7.0 || opened["url"] != "https://github.com/acme/api/pull/7" || opened["draft"] != true {
+		t.Fatalf("opened: %v", opened)
+	}
+	if asked := f.Pulls[web.ID]; len(asked) != 1 || asked[0].Repository != "acme/api" || asked[0].Head != "agent/a" || asked[0].Base != "main" || asked[0].Title != "A change" || asked[0].Body != "Why." || !asked[0].Draft {
+		t.Fatalf("asked %+v", asked)
+	}
+	// on GitLab: nothing open yet, and the line that opens it
+	isErr, lab := s.tool(4, "open_pull_request", map[string]any{"machine": web.ID, "repository": "team/site", "head": "agent/a", "base": "main", "title": "A change"})
+	if isErr || lab["opened"] != false || lab["number"] != nil || !strings.HasPrefix(fmt.Sprint(lab["run"]), "git push -o merge_request.create") || lab["note"] == nil {
+		t.Fatalf("on GitLab: %v", lab)
+	}
+	// what is missing said before anything is asked; a refusal as the API said it
+	for i, args := range []map[string]any{{"repository": "acme/api", "head": "a", "base": "main", "title": "x"},
+		{"machine": "web", "head": "a", "base": "main", "title": "x"}, {"machine": "web", "repository": "acme/api", "base": "main", "title": "x"},
+		{"machine": "web", "repository": "acme/api", "head": "a", "title": "x"}, {"machine": "web", "repository": "acme/api", "head": "a", "base": "main"},
+		{"machine": "web", "repository": "acme/api", "head": "a", "base": "main", "title": "x", "head_repo": "other/api"}} {
+		isErr, body := s.tool(10+i, "open_pull_request", args)
+		e, _ := body["error"].(map[string]any)
+		if !isErr || e["code"] != api.CodeInvalidRequest || e["status"] != nil {
+			t.Fatalf("%v: %v", args, body)
+		}
+	}
+	if isErr, body := s.tool(20, "open_pull_request", map[string]any{"machine": "web", "repository": "acme/docs", "head": "a", "base": "main", "title": "x"}); !isErr || !strings.Contains(fmt.Sprint(body), "its team was given it to read") {
+		t.Fatalf("one it reads: %v", body)
 	}
 }
 

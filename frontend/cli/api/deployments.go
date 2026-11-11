@@ -15,7 +15,7 @@ import (
 
 // DeployOpen says whether people can deploy yet. Until they can, the API answers each of these calls 501 not_open, and
 // wm's help and wm-mcp's list of tools leave Deploy out: a wm released before then has these commands, and they say so.
-const DeployOpen = false
+const DeployOpen = true
 
 // A deployment's states.
 const (
@@ -232,8 +232,8 @@ func (c *Client) GetDeployment(ctx context.Context, deployment string) (*Deploym
 	return &out, nil
 }
 
-// UpdateDeployment changes a deployment's settings. Its name, branch, commands and port apply from its next run;
-// keep_awake at once.
+// UpdateDeployment changes a deployment's settings. Its name and its machine's change at once, as does keep_awake; its
+// branch, commands and port apply from its next run.
 func (c *Client) UpdateDeployment(ctx context.Context, deployment string, change DeploymentChange) (*Deployment, error) {
 	id, err := segment("deployment", deployment)
 	if err != nil {
