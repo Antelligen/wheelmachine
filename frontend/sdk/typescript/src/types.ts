@@ -310,8 +310,9 @@ export interface Location {
 /** What a machine may reach on the internet. */
 export interface NetworkPolicy {
   /**
-   * `"open"` (the whole internet), `"closed"` (no internet, though name lookups and some sites we host still work), or
-   * `"allowed"` (only `allow`).
+   * `"open"` (the whole internet), `"closed"` (no internet in or out and no name lookups: a public port answers only as
+   * a private one), or `"allowed"` (only `allow`). Whatever it is, your team's repositories and folders still work
+   * where given.
    */
   internet: "open" | "closed" | "allowed";
   /**
@@ -1143,7 +1144,7 @@ export interface MachineCreateParams {
    * (and is charged) until it is paused or stopped.
    */
   sleep_when_idle?: boolean;
-  /** How long it must be idle before it pauses by itself (seconds, 60 to 86400; 300). */
+  /** How long it must be idle before it pauses by itself (seconds, 1800 to 86400; 1800: half an hour, and never less). */
   idle_after_s?: number;
   /** Turn its desktop on behind the answer, so that a first `screenshot()` finds it ready. */
   desktop?: boolean;
@@ -1239,6 +1240,64 @@ export interface RequestListParams {
 export interface MachineBackupParams {
   /** At most 200 characters. */
   note?: string;
+}
+
+/** A repository a machine reaches: to `read`, or to `write` (push) too. */
+export interface MachineRepository {
+  object: "machine_repository";
+  provider: "github" | "gitlab";
+  host: string;
+  /** Its path on its host, such as `acme/api`. */
+  repository: string;
+  access: "read" | "write";
+  /** Whether the person who holds the machine has their own account linked there, and it still works. */
+  linked: boolean;
+  /** Whether a push will go: to `write`, with their account linked - or none needed, on a company's own GitLab. */
+  can_push: boolean;
+  /** The team's own rule for pushes to it; null for any branch the account does not protect, and its tags. */
+  push: { branches: string[]; tags: boolean } | null;
+}
+
+/** The repositories a machine reaches now, and the branches no machine of the account pushes to. */
+export interface MachineRepositories {
+  object: "list";
+  data: MachineRepository[];
+  protected_branches: string[];
+}
+
+export interface PullRequestParams {
+  /** Its path on its host, such as `acme/api`. */
+  repository: string;
+  /** Its host, only where the same path is on two of them. */
+  host?: string;
+  /** The branch with the changes: of the same repository, one the team's machines may push to. */
+  head: string;
+  /** The branch to merge them into; it may be a protected one. */
+  base: string;
+  /** One line, at most 255 characters. */
+  title: string;
+  /** At most 60000 bytes. On GitLab, no line of it may begin with `/`. */
+  body?: string;
+  draft?: boolean;
+}
+
+/**
+ * A pull request opened from a machine (`opened`, on GitHub: its `number` and `url`) - or, on GitLab, `run`: the line of
+ * git to run in the clone in the machine, which opens a merge request as it pushes, and a `note` saying so.
+ */
+export interface PullRequest {
+  object: "pull_request";
+  opened: boolean;
+  provider: "github" | "gitlab";
+  host: string;
+  repository: string;
+  head: string;
+  base: string;
+  draft: boolean;
+  number: number | null;
+  url: string | null;
+  run: string | null;
+  note: string | null;
 }
 
 export interface BackupListParams {

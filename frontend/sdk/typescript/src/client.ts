@@ -82,7 +82,6 @@ export class Wheelmachine {
   readonly maxRetries: number;
   readonly machines: Machines;
   readonly ports: Ports;
-  /** Not open yet: until Deploy opens, each call fails with the code `not_open`. */
   readonly deployments: Deployments;
   readonly apps: Apps;
   readonly projects: Projects;

@@ -118,6 +118,10 @@ its team, an owner or an admin: `machines.fork` answers it with the request, and
   `client.machines.fork(machine.id, { backup, cpus: 8 })`, or `{ backup: "latest" }` for its newest.
   `client.machines.backups(machine.id)` lists a machine's, newest first, and `client.machines.backups()` every one the
   key reaches.
+- **Pull requests**: `client.machines.repositories(machine.id)` says what a machine reaches and whether a push will go,
+  and `client.machines.openPullRequest(machine.id, { repository: "acme/api", head: "agent/a", base: "main", title: "..." })`
+  opens one on GitHub. On GitLab its `run` is the line of git that opens it: run it in the clone in the machine. It does
+  not merge, approve or close anything: people do.
 - **Answers** are plain objects; one a call answered with says how it came in `lastResponse` (`requestId`,
   `replayed`, `rateLimit`), which JSON leaves out.
 - **What a machine used**: `client.machines.metrics(id, { since: "6h", step: 300 })` gives its CPUs (a share
@@ -157,6 +161,35 @@ await client.ports.close(machine.id, 8080); // the address answers 404 from then
 - **A link is a secret.** It opens once, within five minutes, and lets the browser that opens it in for `access_s`
   seconds (1800). Its `url` is in that answer only, like a new key's `secret`: give it to the one person it is for.
   Each call makes a new link, so `link` is never sent again once it may have reached the API.
+
+## Deploy
+
+An app put on the internet from a repository of your connections, a public repository's https address, or files, on a
+machine of its own at a public address. It is charged as any machine is, builds included, and pauses once nobody has
+visited for 30 minutes and its app is quiet, unless `keep_awake: true`; the next visit wakes it. One made from a team's
+machine type pauses as the type says.
+
+```ts
+let app = await client.deployments.create({
+  source: { connection: "code_01jb2xk3n4p5q6r7s8t9v0w1x2", repo: "acme/shop" },
+  build: "npm ci",
+  start: "npm start",
+  port: 3000,
+});
+app = await client.deployments.wait(app.id);
+console.log(app.state, app.url); // live, and its address
+await client.deployments.redeploy(app.id); // a build that fails leaves the live version running
+await client.deployments.delete(app.id); // and its machine, with all its files
+```
+
+Files go to a deployment made for them, as one archive, sent as it is: leave out of it what must not be read.
+
+```ts
+const site = await client.deployments.create({ source: { upload: true }, start: "npm start", port: 3000 });
+await client.deployments.sendFiles(site.id, { path: "app.tar.gz" }); // then it is built and started
+```
+
+See https://docs.wheelmachine.ai/deploy.html.
 
 ## Apps
 

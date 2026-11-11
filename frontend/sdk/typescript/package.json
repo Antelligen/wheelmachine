@@ -1,6 +1,6 @@
 {
   "name": "wheelmachine",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "The official TypeScript library for the Wheelmachine API: cloud machines for people and agents, paid by the second.",
   "keywords": [
     "wheelmachine",

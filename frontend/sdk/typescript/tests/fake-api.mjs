@@ -78,6 +78,7 @@ const CREATES = [
   ["POST", /^\/v1\/machines\/[^/]+\/(fork-for|hand-off|take-back|give-back)$/],
   ["POST", /^\/v1\/requests$/],
   ["POST", /^\/v1\/machines\/[^/]+\/backups$/],
+  ["POST", /^\/v1\/machines\/[^/]+\/pull-requests$/],
   ["POST", /^\/v1\/projects$/],
   ["POST", /^\/v1\/keys$/],
 ];
@@ -136,6 +137,8 @@ export class FakeAPI {
     this.folderFiles = new Map();
     /** every backup taken, the oldest first */
     this.backups = [];
+    /** what a machine reaches of its team's repositories, as GET /v1/machines/{id}/repositories answers them */
+    this.repositories = [];
     /** by name: the value as it reached the API (never in an answer), and when it was made and set */
     this.secrets = new Map();
     /** the model chosen, by agent ("*": every agent), as GET /v1/agents shows it */
@@ -254,7 +257,7 @@ export class FakeAPI {
       cpus: 2,
       memory_gb: 4,
       sleep_when_idle: true,
-      idle_after_s: 300,
+      idle_after_s: 1800,
       labels: { ...(labels ?? {}) },
       secrets: [],
       network: { internet: "open", allow: [] },
@@ -1360,7 +1363,7 @@ export class FakeAPI {
     if (path === "/v1/deployments" || path.startsWith("/v1/deployments/")) return this.deployRoutes(method, path, query, body, raw);
     m = /^\/v1\/machines\/([^/]+)\/ports(?:\/([^/]+)(\/link)?)?$/.exec(path);
     if (m) return this.portRoutes(method, m[1], m[2], m[3] !== undefined, body);
-    m = /^\/v1\/machines\/([^/]+)(?:\/([a-z]+))?$/.exec(path);
+    m = /^\/v1\/machines\/([^/]+)(?:\/([a-z-]+))?$/.exec(path);
     if (!m) throw new Problem(404, "not_found", "no such route");
     const [, mid, action] = m;
     const mach = this.machine(mid);
@@ -1406,6 +1409,19 @@ export class FakeAPI {
       const made = { id: `20261023t070000z-${this.next()}`, object: "backup", machine: mid, note: b.note ?? "", created_at: "2026-10-23T07:00:00Z" };
       this.backups.push(made);
       return [201, made, {}];
+    }
+    if (method === "GET" && action === "repositories") {
+      return [200, { object: "list", data: this.repositories, protected_branches: ["main", "master", "release/**"] }, {}];
+    }
+    if (method === "POST" && action === "pull-requests") {
+      const b = only(body, ["repository", "host", "head", "base", "title", "body", "draft"]);
+      const r = this.repositories.find((x) => x.repository === b.repository && x.access === "write");
+      if (!r) throw new Problem(404, "not_found", "this machine does not reach that repository");
+      const made = { object: "pull_request", opened: true, provider: r.provider, host: r.host, repository: r.repository, head: b.head, base: b.base,
+        draft: b.draft ?? false, number: null, url: null, run: null, note: null };
+      if (r.provider === "gitlab") return [200, { ...made, opened: false, run: `git push -o merge_request.create origin ${b.head}`, note: "Nothing is open yet." }, {}];
+      const number = this.next();
+      return [201, { ...made, number, url: `https://${r.host}/${r.repository}/pull/${number}` }, {}];
     }
     if (method === "GET" && action === "metrics") {
       const step = query.get("step") ?? "60";

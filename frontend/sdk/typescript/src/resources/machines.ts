@@ -19,6 +19,7 @@ import type {
   MachineForkParams,
   MachineMetrics,
   MachineMetricsParams,
+  MachineRepositories,
   MachineCreateParams,
   MachineRequest,
   MachineListParams,
@@ -27,6 +28,8 @@ import type {
   MachineUpdateParams,
   MachineWaitParams,
   Page,
+  PullRequest,
+  PullRequestParams,
   ReadFileOptions,
   RequestOptions,
   ScreenActionsDone,
@@ -337,6 +340,32 @@ export class Machines {
     const query: Array<[string, string]> = params.limit === undefined ? [] : [["limit", String(params.limit)]];
     const { data } = await this.#core.json<Page<Backup>>({ method: "GET", path, query, options });
     return data?.data ?? [];
+  }
+
+  /**
+   * The GitHub and GitLab repositories a machine reaches now, each to read or to push too, and whether a push will go:
+   * its holder's own account linked there, or on a company's own GitLab none needed. Those in its team who reach it may
+   * ask, and its organisation's owners and admins.
+   */
+  async repositories(machineId: string, options: RequestOptions = {}): Promise<WithResponse<MachineRepositories>> {
+    return this.#object<MachineRepositories>({ method: "GET", path: `/v1/machines/${id(machineId, "machineId")}/repositories`, options });
+  }
+
+  /**
+   * Opens a pull request from a branch of a repository the machine may push to. Only the person who holds the machine may
+   * ask. This does not merge, approve or close anything: people do. On GitHub it is open now, under the holder's own linked
+   * account. On GitLab `opened` is false, and `run` is the line of git to run in the clone in the machine, which opens a
+   * merge request as it pushes; a body with a line beginning with `/` is refused there, as GitLab would run that line as a
+   * command. Like `create`, a retry never makes two.
+   */
+  async openPullRequest(machineId: string, params: PullRequestParams, options: CreateOptions = {}): Promise<WithResponse<PullRequest>> {
+    return this.#object<PullRequest>({
+      method: "POST",
+      path: `/v1/machines/${id(machineId, "machineId")}/pull-requests`,
+      json: given(params),
+      idempotencyKey: await keyFor(options),
+      options,
+    });
   }
 
   /**

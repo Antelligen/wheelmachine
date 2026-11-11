@@ -217,7 +217,7 @@ test("a machine is made and read back", async (t) => {
 test("a machine pauses when idle unless it is made not to", async (t) => {
   const { api, client } = await setup(t);
   let m = await client.machines.create();
-  assert.deepEqual([m.sleep_when_idle, m.idle_after_s], [true, 300]);
+  assert.deepEqual([m.sleep_when_idle, m.idle_after_s], [true, 1800]);
   m = await client.machines.create({ idle_after_s: 3600 });
   assert.deepEqual(api.requests("POST", "^/v1/machines$").at(-1).json(), { idle_after_s: 3600 });
   assert.equal(m.idle_after_s, 3600);

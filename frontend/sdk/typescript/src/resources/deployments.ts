@@ -1,8 +1,6 @@
 /**
  * `client.deployments`: apps put on the internet from a repository on GitHub or GitLab, the https address of a public
  * one, or files, each on a machine of its own at a public address.
- *
- * Not open yet: until Deploy opens, each call fails with the code `not_open`.
  */
 
 import { type Core, withResponse } from "../core.js";
@@ -53,8 +51,6 @@ function query(params: object): [string, string][] | undefined {
 
 /**
  * `client.deployments`: apps put on the internet, each on a machine of its own at a public address.
- *
- * Not open yet: until Deploy opens, each call fails with the code `not_open`.
  */
 export class Deployments {
   readonly #core: Core;
@@ -92,8 +88,8 @@ export class Deployments {
   }
 
   /**
-   * Changes its settings. Its name, branch, commands and port apply from its next run; `keep_awake` at once. Only the
-   * person who deployed it can.
+   * Changes its settings. Its name and its machine's change at once, as does `keep_awake`; its branch, commands and port
+   * apply from its next run. Only the person who deployed it can.
    */
   async update(deploymentId: string, params: DeploymentUpdateParams, options: RequestOptions = {}): Promise<WithResponse<Deployment>> {
     return this.#object({ method: "PATCH", path: `/v1/deployments/${id(deploymentId, "deploymentId")}`, json: given(params), options });

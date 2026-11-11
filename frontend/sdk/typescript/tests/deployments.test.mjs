@@ -1,5 +1,5 @@
 // Deploy: a deployment made from each kind of source, an archive sent, a run followed, and what else a deployment can be
-// asked. Until Deploy opens, each call says it is not open yet.
+// asked. A call while Deploy is shut says it is not open.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -99,7 +99,7 @@ test("what can be deployed is listed", async (t) => {
   assert.deepEqual([branches.default, branches.known, branches.data.map((b) => b.name)], ["main", true, ["main"]]);
 });
 
-test("until Deploy opens, each call says so", async (t) => {
+test("a call while Deploy is shut says so", async (t) => {
   const { api, client } = await setup(t);
   api.deployClosed = true;
   await assert.rejects(client.deployments.list(), (err) => err instanceof WheelmachineError && err.code === "not_open");
